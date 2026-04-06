@@ -590,6 +590,12 @@ void Radiant_detachGameToolsPathObserver( ModuleObserver& observer ){
 void Radiant_Initialise(){
 	GlobalModuleServer_Initialise();
 
+#if defined( WIN32 )
+	// Add the app directory to the DLL search path so that module dependencies
+	// like libassimp-6.dll are found even when loaded from subdirectories (e.g. modules/)
+	SetDllDirectoryA( AppPath_get() );
+#endif
+
 	Radiant_loadModulesFromRoot( AppPath_get() );
 
 	Preferences_Load();

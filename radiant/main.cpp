@@ -63,6 +63,9 @@
 
 #include "main.h"
 
+#include <chrono>
+#include <QThread>
+
 #include "version.h"
 
 #include "debugging/debugging.h"
@@ -433,6 +436,7 @@ int main( int argc, char* argv[] ){
 	QApplication::setWindowIcon( new_local_icon( "radiant.ico" ) ); // before any windows, after paths_init()
 
 	show_splash();
+	auto splash_start = std::chrono::steady_clock::now();
 
 	create_global_pid();
 
@@ -453,6 +457,14 @@ int main( int argc, char* argv[] ){
 //	user_shortcuts_init();
 
 	g_pParentWnd = new MainFrame();
+
+	// Ensure splash is visible for at least 3 seconds
+	{
+		auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - splash_start).count();
+		if ( elapsed < 3000 )
+			QThread::msleep( 3000 - elapsed );
+	}
 
 	hide_splash();
 
