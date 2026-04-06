@@ -1,6 +1,6 @@
 #include "botviz.h"
 
-#include "iglrender.h"   // gl()
+#include "iglrender.h"
 #include "igl.h"
 
 #include <cstdio>
@@ -15,7 +15,7 @@ BotViz& BotViz::instance() {
 	return inst;
 }
 
-// ── Minimal JSON field helpers ────────────────────────────────────────────────
+// ── JSON helpers ──────────────────────────────────────────────────────────────
 
 static bool jsonFloat( const char* line, const char* key, float& out ) {
 	const char* p = strstr( line, key );
@@ -52,12 +52,17 @@ int BotViz::load( const char* path ) {
 
 	m_frames.clear();
 	m_points.clear();
-	m_filePath  = path;
-	m_resolved  = false;
+	m_nodeStats.clear();
+	m_filePath     = path;
+	m_resolved     = false;
+	m_hasPositions = false;
 
 	char line[1024];
+	int  framesWithPos = 0;
+
 	while ( fgets( line, sizeof(line), f ) ) {
 		if ( line[0] != '{' ) continue;
+
 		BotFrame fr{};
 		jsonFloat( line, "\"time\"",           fr.time );
 		jsonInt(   line, "\"nodeIndex\"",       fr.nodeIndex );
@@ -66,24 +71,47 @@ int BotViz::load( const char* path ) {
 		jsonFloat( line, "\"routeDeviation\"",  fr.routeDeviation );
 		jsonInt(   line, "\"collisionRisk\"",   fr.collisionRisk );
 		jsonStr(   line, "\"decisionState\"",   fr.decisionState, 32 );
+
+		if ( jsonFloat( line, "\"ox\"", fr.ox ) &&
+		     jsonFloat( line, "\"oy\"", fr.oy ) &&
+		     jsonFloat( line, "\"oz\"", fr.oz ) ) {
+			fr.hasPosition = true;
+			framesWithPos++;
+		}
+
 		m_frames.push_back( fr );
 	}
 	fclose( f );
 
 	if ( !m_frames.empty() ) {
-		m_maxSpeed = 1.f;
+		m_maxSpeed     = 1.f;
+		m_hasPositions = ( framesWithPos > (int)m_frames.size() / 2 );
 		for ( auto& fr : m_frames )
 			m_maxSpeed = std::max( m_maxSpeed, fr.actualSpeed );
+		buildNodeStats();
 	}
 	return (int)m_frames.size();
+}
+
+void BotViz::buildNodeStats() {
+	m_nodeStats.clear();
+	for ( auto& fr : m_frames ) {
+		int key = fr.nodeIndex;   // routeIndex = node order
+		m_nodeStats[key].nodeOrder = key;
+		m_nodeStats[key].addFrame( fr );
+	}
+	for ( auto& kv : m_nodeStats )
+		kv.second.finalise();
 }
 
 void BotViz::clear() {
 	m_frames.clear();
 	m_points.clear();
+	m_nodeStats.clear();
 	m_filePath.clear();
-	m_resolved = false;
-	playhead   = 0;
+	m_resolved     = false;
+	m_hasPositions = false;
+	playhead       = 0;
 }
 
 float BotViz::duration() const {
@@ -96,8 +124,12 @@ const BotFrame* BotViz::frame( int i ) const {
 	return &m_frames[i];
 }
 
-// ── Speed → color ramp ────────────────────────────────────────────────────────
-// sqrt-scaled: blue → cyan → green → yellow → red
+const NodeStats* BotViz::nodeStats( int order ) const {
+	auto it = m_nodeStats.find( order );
+	return ( it != m_nodeStats.end() ) ? &it->second : nullptr;
+}
+
+// ── Speed → color ─────────────────────────────────────────────────────────────
 
 void BotViz::speedToColor( float speed, float& r, float& g, float& b ) const {
 	float t = sqrtf( std::min( speed / m_maxSpeed, 1.f ) );
@@ -107,17 +139,22 @@ void BotViz::speedToColor( float speed, float& r, float& g, float& b ) const {
 	else                   { float s=(t-.75f)/.25f; r=1;  g=1-s;   b=0; }
 }
 
-// ── Resolve positions from scene ──────────────────────────────────────────────
+// ── Resolve positions ─────────────────────────────────────────────────────────
 
 void BotViz::resolvePositions( const std::map<int,Vector3>& nodePositions ) {
 	m_points.clear();
 	m_points.reserve( m_frames.size() );
 
+	const float Z_OFFSET = 40.f;
+
 	for ( auto& fr : m_frames ) {
 		RoutePoint pt{};
-		auto it = nodePositions.find( fr.nodeIndex );
-		if ( it != nodePositions.end() ) {
-			pt.pos = it->second + Vector3( 0, 0, 120 );   // 120 units above ground
+		if ( fr.hasPosition ) {
+			pt.pos = Vector3( fr.ox, fr.oy, fr.oz + Z_OFFSET );
+		} else {
+			auto it = nodePositions.find( fr.nodeIndex );
+			if ( it != nodePositions.end() )
+				pt.pos = it->second + Vector3( 0, 0, 120 );
 		}
 		speedToColor( fr.actualSpeed, pt.r, pt.g, pt.b );
 		pt.isCollision = ( fr.collisionRisk > 0 );
@@ -126,12 +163,11 @@ void BotViz::resolvePositions( const std::map<int,Vector3>& nodePositions ) {
 	m_resolved = true;
 }
 
-// ── OpenGL rendering ──────────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
 void BotViz::renderWireframe() const {
 	if ( !m_resolved || m_points.empty() ) return;
 
-	// Route line — color by speed
 	if ( showRoute ) {
 		gl().glLineWidth( 2.f );
 		gl().glBegin( GL_LINE_STRIP );
@@ -142,7 +178,6 @@ void BotViz::renderWireframe() const {
 		gl().glEnd();
 	}
 
-	// Collision markers — red crosses
 	if ( showCollisions ) {
 		const float R = 80.f;
 		gl().glLineWidth( 3.f );
@@ -160,7 +195,6 @@ void BotViz::renderWireframe() const {
 		gl().glEnd();
 	}
 
-	// Playhead — white cross
 	{
 		int fi = std::min( playhead, (int)m_points.size() - 1 );
 		if ( fi >= 0 ) {
@@ -178,6 +212,5 @@ void BotViz::renderWireframe() const {
 }
 
 void BotViz::renderSolid() const {
-	// Same overlay in solid mode
 	renderWireframe();
 }
