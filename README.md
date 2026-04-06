@@ -1,110 +1,81 @@
-NetRadiant-custom
-=================
-
-The open-source, cross-platform level editor for id Tech based games.
-
-NetRadiant-custom is a fork of NetRadiant (GtkRadiant 1.4&rarr;massive rewrite&rarr;1.5&rarr;NetRadiant&rarr;this)
-
+Q3RallyRadiant
+> **A fork of [NetRadiant-custom](https://github.com/Garux/netradiant-custom) tailored for [Q3Rally](https://www.q3rally.com/) map development.**
 ---
-![screenshot](/../readme_files/radDarkShot.png?raw=true)
+![Q3RallyRadiant](install/bitmaps/splash.svg)
 ---
+What is Q3RallyRadiant?
+Q3RallyRadiant is a level editor for Q3Rally, built on top of NetRadiant-custom — the open-source, cross-platform map editor for id Tech based games. This fork adds Q3Rally-specific tooling, branding and workflow improvements on top of the solid NetRadiant-custom foundation.
+All upstream features of NetRadiant-custom are preserved. Q3RallyRadiant stays synchronized with upstream and merges improvements as they are released.
+Q3Rally-specific additions
+BotViz Plugin
+Visualizes bot AI debug data recorded during gameplay directly in the 3D editor view.
+Loads JSONL debug files exported by the Q3Rally AI system
+Renders bot routes as speed-colored lines (blue = slow, red = fast)
+Displays `bot_path_node` positions from the currently loaded map
+Timeline slider with frame, time and speed readout
+Collision event markers (red sphere + ring)
+Accessible via Plugins → BotViz → Load JSONL
+Q3Rally Gamepack
+Preconfigured for Q3Rally entities, shaders and compile pipeline:
+`rally_startfinish`, `rally_checkpoint`, `bot_path_node` and all Q3Rally entities
+Q3Rally shader paths and texture types
+Engine path preconfigured for `q3rally.exe`
+Branding
+Q3RallyRadiant splash screen, icon and About dialog — keeping it clear this is a Q3Rally tool while crediting the upstream project.
+---
+Building
+Windows (MSYS2 MinGW64) — recommended for development
+```bash
+# Install dependencies (run once)
+pacman -S --needed base-devel git mingw-w64-x86_64-toolchain \
+  mingw-w64-x86_64-cmake mingw-w64-x86_64-qt5-base \
+  mingw-w64-x86_64-qt5-svg mingw-w64-x86_64-libxml2 \
+  mingw-w64-x86_64-libjpeg-turbo mingw-w64-x86_64-libpng \
+  mingw-w64-x86_64-assimp mingw-w64-x86_64-minizip \
+  mingw-w64-x86_64-libwebp unzip
 
-## Downloads
+# Build
+cd /d/Q3RallyDev/Q3RallyRadiant
+make MAKEFILE_CONF=msys2-Makefile.conf DOWNLOAD_GAMEPACKS=no INSTALL_DLLS=no BUILD=release -j$(nproc)
+```
+After building, copy Qt runtime DLLs and platform plugin:
+```bash
+cd install/
+ntldd -R radiant.exe | grep mingw64 | awk -F'=> ' '{print $2}' | awk '{print $1}' | awk -F'\\' '{print $NF}' | xargs -I{} cp /mingw64/bin/{} .
+mkdir -p platforms imageformats iconengines
+cp /mingw64/share/qt5/plugins/platforms/qwindows.dll platforms/
+cp /mingw64/share/qt5/plugins/imageformats/qsvg.dll imageformats/
+cp /mingw64/share/qt5/plugins/iconengines/qsvgicon.dll iconengines/
+```
+Linux (WSL Ubuntu 24.04)
+```bash
+export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
 
-Ready-to-use packages are available in the [Releases section](/../../releases).
-
-## Supported games
-
-Main focus is on Quake, Quake3 and Quake Live.
-
-Though other normally supported games should work too. Releases include configs for the following games: Alien Arena, Darkplaces, Doom 3, Doombringer, Wolfenstein: Enemy Territory, Heretic II, Half-Life, Jedi Knight Jedi Academy, Jedi Knight II: Jedi Outcast, Kingpin, Neverball, Nexuiz, Open Arena, Project::OSiRiON, Prey, Quake II, Q3Rally, Quake 4, Quetoo, Smokin' Guns, Soldier of Fortune II - Double Helix, Star Trek Voyager : Elite Force, Tremulous, Turtle Arena, UFO:Alien Invasion, Unreal Arena, Unvanquished, Urban Terror, Warfork, Warsow, Return To Castle Wolfenstein, World of Padman, Xonotic, ZEQ2 Lite.
-
-## Features
-
-Development is focused on smoothing and tweaking editing process.
-
-#### Random feature highlights
-
-* WASD camera binds
-* Fully supported editing in 3D view (brush and entity creation, all manipulating tools)
-* Uniform merge algorithm, merging selected brushes, components and clipper points
-* Free and robust vertex editing, also providing abilities to remove and insert vertices
-* UV Tool (edits texture alignment of selected face or patch)
-* Autocaulk
-* Model browser
-* Brush faces extrusion
-* Left mouse button click tunnel selector, paint selector
-* Numerous mouse shortcuts (see help->General->Mouse Shortcuts)
-* Focus camera on selected (Tab)
-* Snapped modes of manipulators
-* Draggable renderable transform origin for manipulators
-* Quick vertices drag / brush faces shear shortcut
-* Simple shader editor
-* Texture painting by drag
-* Seamless brush face<->face, patch<->face texture paste
-* Customizable keyboard shortcuts
-* Customizable GUI themes, fonts
-* MeshTex plugin
-* Patch thicken
-* All patch prefabs are created aligned to active projection
-* Filters toolbar with extra functions on right mouse button click
-* Viewports zoom in to mouse pointer
-* \'all Supported formats\' default option in open dialogs
-* Opening *.map, sent via cmd line (can assign *.map files in OS to be opened with radiant)
-* Texture browser: show alpha transparency option
-* Texture browser: search in directories and tags trees
-* Texture browser: search in currently shown textures
-* CSG Tool (aka shell modifier)
-* Working region compilations (build a map with region enabled = compile regioned part only)
-* QE tool in a component mode: perform drag w/o hitting any handle too
-* Map info dialog: + Total patches, Ingame entities, Group entities, Ingame group entities counts
-* Connected entities selector/walker
-* Build->customize: list available build variables
-* 50x faster light radius rendering
-* Light power is adjustable by mouse drag
-* Anisotropic textures filtering
-* Optional MSAA in viewports
-* New very fast entity names rendering system
-* Support \'stupid quake bug\'
-* Arbitrary texture projections for brushes and curves
-* Fully working texture lock, supporting any affine transformation
-* Texture locking during vertex and edge manipulations
-* Brush resize (QE tool): reduce selected faces amount to most wanted ones
-* Support brush formats, as toggleable preference: Axial projection, Brush primitives, Valve 220
-* Autodetect brush type on map opening
-* Automatic AP, BP and Valve220 brush types conversion on map Import and Paste
-* New bbox styled manipulator, allowing any affine transform (move, rotate, scale, skew)
-* rendering of Q3 shader based skyboxes
-* Incredible number of fixes and options
-
-
-#### Q3Map2:
-
-* q3map_remapshader remaps anything fine, on all stages
-* Automatic map packager (complete Q3 support)
-* Report full / full pk3 path on file syntax errors
-* Allowed simultaneous samples+filter use, makes sense
-* -brightness 0..alot, def 1: mimics q3map_lightmapBrightness globally
-* -contrast -255..255, def 0: lighting contrast
-* -saturation light option
-* -bouncecolorratio 0..1 (ratio of colorizing light sample by texture)
-* -nolm - no lightmaps
-* -novertex works, (0..1) sets globally
-* -vertexscale
-* New area lights backsplash algorithm (utilizing area lights instead of point ones)
-* -backsplash (float)scale (float)distance: adjust area lights globally (real area lights have no backsplash)
-* New slightly less careful, but much faster lightmaps packing algorithm (allocating... process)
-* -extlmhacksize zero effort external lightmaps for Q3
-* Valve220 mapformat autodetection and support
-* Consistent brush content deduction with mixed face parameters
-* Model shaders paths deduction
-* Fixed model autoclip, added 20 new clipping modes
-* Support negative misc_model scale
-* Assimp model loading library (40+ formats)
-* -json bsp export/import
-* -mergebsp injects one bsp to another
-* No shaderlist.txt mode: load all shaders
-
-###### see changelog-custom.txt for more
-
-## [COMPILING](/COMPILING)
+make install/radiant.x86_64 \
+     install/plugins/botviz.so \
+     install/plugins/prtview.so \
+     install/plugins/sunplug.so \
+     install/modules/vfspk3.so \
+     install/modules/mapq3.so \
+     install/modules/entity.so \
+     install/modules/shaders.so \
+     -j$(nproc)
+```
+---
+Staying in sync with upstream
+Q3RallyRadiant tracks Garux/netradiant-custom as upstream remote.
+```bash
+git remote add upstream https://github.com/Garux/netradiant-custom.git
+git fetch upstream
+git merge upstream/master
+```
+Conflicts are expected in `radiant/gtkdlgs.cpp`, `radiant/mainframe.cpp` and `radiant/main.cpp` (branding) and `plugins/vfspk3/vfs.cpp` (GCC 13 fix). Everything under `contrib/botviz/` is Q3Rally-only and will never conflict.
+---
+Credits
+NetRadiant-custom by Garux — the upstream editor this fork is based on
+NetRadiant by the Xonotic team
+GtkRadiant by id Software / TTimo
+Q3RallyRadiant additions by the Q3Rally development team
+---
+License
+Q3RallyRadiant is free software, licensed under the GNU General Public License v2. See LICENSE for details. All upstream code retains its original license.
