@@ -4,10 +4,6 @@
 
 ---
 
-![Q3RallyRadiant](install/bitmaps/splash.svg)
-
----
-
 ## What is Q3RallyRadiant?
 
 Q3RallyRadiant is a level editor for Q3Rally, built on top of NetRadiant-custom — the open-source, cross-platform map editor for id Tech based games. This fork adds Q3Rally-specific tooling, branding and workflow improvements on top of the solid NetRadiant-custom foundation.
