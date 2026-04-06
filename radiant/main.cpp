@@ -414,8 +414,8 @@ int main( int argc, char* argv[] ){
 	QApplication qapplication( argc, argv );
 	setlocale( LC_NUMERIC, "C" );
 	qInstallMessageHandler( qute_messageHandler );
-	QCoreApplication::setOrganizationName( "QtRadiant" );
-	QCoreApplication::setApplicationName( "NetRadiant-Custom" );
+	QCoreApplication::setOrganizationName( "Q3Rally" );
+	QCoreApplication::setApplicationName( "Q3RallyRadiant" );
 	QCoreApplication::setApplicationVersion( QT_VERSION_STR );
 
 	GlobalDebugMessageHandler::instance().setHandler( GlobalPopupDebugMessageHandler::instance() );

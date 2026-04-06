@@ -445,6 +445,7 @@ binaries-radiant-plugins: \
 	$(INSTALLDIR)/plugins/shaderplug.$(DLL) \
 	$(INSTALLDIR)/plugins/sunplug.$(DLL) \
 	$(INSTALLDIR)/plugins/ufoaiplug.$(DLL) \
+	$(INSTALLDIR)/plugins/botviz.$(DLL) \
 	$(INSTALLDIR)/plugins/meshtex.$(DLL) \
 
 .PHONY: binaries-radiant
@@ -1185,6 +1186,12 @@ $(INSTALLDIR)/plugins/sunplug.$(DLL): LIBS_EXTRA := $(LIBS_GLIB) $(LIBS_QTWIDGET
 $(INSTALLDIR)/plugins/sunplug.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLAGS_QTWIDGETS) -Ilibs -Iinclude
 $(INSTALLDIR)/plugins/sunplug.$(DLL): \
 	contrib/sunplug/sunplug.o \
+
+$(INSTALLDIR)/plugins/botviz.$(DLL): LIBS_EXTRA := $(LIBS_GLIB) $(LIBS_QTWIDGETS)
+$(INSTALLDIR)/plugins/botviz.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLAGS_QTWIDGETS) -Ilibs -Iinclude
+$(INSTALLDIR)/plugins/botviz.$(DLL): \
+	contrib/botviz/botviz.o \
+	contrib/botviz/plugin.o \
 
 $(INSTALLDIR)/qdata3.$(EXE): LIBS_EXTRA := $(LIBS_XML)
 $(INSTALLDIR)/qdata3.$(EXE): CPPFLAGS_EXTRA := $(CPPFLAGS_XML) -Itools/quake2/common -Ilibs -Iinclude -Wno-format-overflow

@@ -252,10 +252,11 @@ void InitDirectory( const char* directory, ArchiveModules& archiveModules ){
 
 				const char *ext = path_get_extension( name );
 				/* .pk3dir / .pk4dir / .dpkdir / .pakdir / .waddir */
-				if ( string_equal_suffix_nocase( ext, "dir" ) && GetArchiveTable( archiveModules, ( const char[] ){ ext[0], ext[1], ext[2], '\0' } ) != nullptr ) {
+				{ const char ext3[4] = { ext[0], ext[1], ext[2], '\0' };
+				if ( string_equal_suffix_nocase( ext, "dir" ) && GetArchiveTable( archiveModules, ext3 ) != nullptr ) {
 					stream( path, name, '/' );
 					g_archives.push_back( archive_entry_t{ stream.c_str(), OpenArchive( stream ), false } );
-				}
+				} }
 
 				if ( GetArchiveTable( archiveModules, ext ) == nullptr ) {
 					continue;

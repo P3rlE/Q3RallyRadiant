@@ -330,7 +330,7 @@ void DoSides( EBrushPrefab type ){
 
 void DoAbout(){
 	QDialog dialog( MainFrame_getWindow(), Qt::Dialog | Qt::WindowCloseButtonHint );
-	dialog.setWindowTitle( "About NetRadiant" );
+	dialog.setWindowTitle( "About Q3RallyRadiant" );
 
 	{
 		auto *vbox = new QVBoxLayout( &dialog );
@@ -347,9 +347,10 @@ void DoAbout(){
 			}
 
 			{
-				auto *label = new QLabel( "NetRadiant " RADIANT_VERSION "\n"
+				auto *label = new QLabel( "Q3RallyRadiant " RADIANT_VERSION "\n"
 				                         __DATE__ "\n\n"
 				                         RADIANT_ABOUTMSG "\n\n"
+				                         "Based on NetRadiant Custom\n\n"
 				                         "This program is free software\n"
 				                         "licensed under the GNU GPL.\n"
 				                       );
