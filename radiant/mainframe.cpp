@@ -56,6 +56,7 @@
 #include <QGroupBox>
 #include <QDialogButtonBox>
 #include <QPushButton>
+#include <QPainter>
 
 #include "commandlib.h"
 #include "scenelib.h"
@@ -1632,7 +1633,14 @@ public:
 
 
 QSplashScreen *create_splash(){
-	auto *splash = new QSplashScreen( new_local_image( "splash.png" ) );
+	QPixmap src = new_local_image( "splash.png" );
+	// Flatten to opaque — composite onto solid background so no alpha shows through
+	QPixmap opaque( src.size() );
+	opaque.fill( QColor( 18, 18, 20 ) );   // match splash background colour
+	QPainter p( &opaque );
+	p.drawPixmap( 0, 0, src );
+	p.end();
+	auto *splash = new QSplashScreen( opaque );
 	splash->show();
 	return splash;
 }

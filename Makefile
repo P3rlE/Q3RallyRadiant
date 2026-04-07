@@ -1193,6 +1193,7 @@ $(INSTALLDIR)/plugins/botviz.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLA
 $(INSTALLDIR)/plugins/botviz.$(DLL): \
 	contrib/botviz/botviz.o \
 	contrib/botviz/plugin.o \
+
 $(INSTALLDIR)/plugins/terrain_generator.$(DLL): LIBS_EXTRA := $(LIBS_GLIB) $(LIBS_QTWIDGETS)
 $(INSTALLDIR)/plugins/terrain_generator.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLAGS_QTWIDGETS) -Ilibs -Iinclude
 $(INSTALLDIR)/plugins/terrain_generator.$(DLL): \
