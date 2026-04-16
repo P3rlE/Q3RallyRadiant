@@ -19,6 +19,7 @@
 #include "stream/stringstream.h"
 #include "string/string.h"
 #include "modulesystem/singletonmodule.h"
+#include "signal/isignal.h"
 
 #include <QWidget>
 #include <QDialog>
@@ -404,7 +405,7 @@ static void ensureStatsPanel() {
 	if ( !g_statsPanel ) {
 		g_statsPanel = new NodeStatsPanel( g_mainWindow );
 		typedef FreeCaller<void(const Selectable&), updateStatsPanelFromSelection> StatsPanelSelectionChangedCaller;
-		GlobalSelectionSystem().addSelectionChangeCallback( StatsPanelSelectionChangedCaller() );
+		GlobalSelectionSystem().addSelectionChangeCallback( makeSignalHandler1( StatsPanelSelectionChangedCaller() ) );
 	}
 }
 
