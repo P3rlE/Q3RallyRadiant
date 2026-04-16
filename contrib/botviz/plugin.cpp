@@ -33,6 +33,7 @@
 #include <QSpinBox>
 #include <QString>
 #include <QComboBox>
+#include <QCheckBox>
 
 #include <map>
 
@@ -72,9 +73,31 @@ static int collectNodes() {
 
 // ── Selected entity reader ────────────────────────────────────────────────────
 
-// Returns the order key of the selected bot_path_node, or -1 if none selected.
+// Returns the order key of the selected bot_path_node, or -1 if no unique valid selection exists.
 static int getSelectedNodeOrder() {
-	return -1;  // Selection API not safely accessible from DLL
+	if ( GlobalSelectionSystem().countSelected() != 1 )
+		return -1;
+
+	class SelectedNodeOrderVisitor : public SelectionSystem::Visitor {
+	public:
+		mutable int  order = -1;
+		mutable bool hasValidOrder = false;
+
+		void visit( scene::Instance& instance ) const override {
+			Entity* ent = Node_getEntity( instance.path().top() );
+			if ( !ent ) return;
+			if ( !string_equal( ent->getClassName(), "bot_path_node" ) ) return;
+
+			const char* orderStr = ent->getKeyValue( "order" );
+			if ( !orderStr || !orderStr[0] ) return;
+			order = atoi( orderStr );
+			hasValidOrder = true;
+		}
+	};
+
+	SelectedNodeOrderVisitor visitor;
+	GlobalSelectionSystem().foreachSelected( visitor );
+	return visitor.hasValidOrder ? visitor.order : -1;
 }
 
 // ── Node Stats Panel ──────────────────────────────────────────────────────────
@@ -89,6 +112,7 @@ class NodeStatsPanel : public QDialog {
 	QLabel* m_lblTopState;
 	QLabel* m_lblNoData;
 	QGroupBox* m_statsBox = nullptr;
+	QCheckBox* m_autoSelection = nullptr;
 
 public:
 	NodeStatsPanel( QWidget* parent )
@@ -117,6 +141,10 @@ public:
 		connect( spin, QOverload<int>::of(&QSpinBox::valueChanged), [this]( int val ) {
 			showStats( val );
 		});
+
+		m_autoSelection = new QCheckBox( "Auto from selection" );
+		m_autoSelection->setChecked( true );
+		vbox->addWidget( m_autoSelection );
 
 		m_lblNoData = new QLabel( "Load a JSONL file and\nenter a node order number." );
 		m_lblNoData->setAlignment( Qt::AlignCenter );
@@ -171,7 +199,19 @@ public:
 	}
 
 	void showEmpty() {
-		showNoData( "Select a bot_path_node." );
+		showNoData( "No data / selection ambiguous:\nselect exactly one bot_path_node." );
+	}
+
+	bool autoFromSelectionEnabled() const {
+		return m_autoSelection && m_autoSelection->isChecked();
+	}
+
+	void updateFromSelection() {
+		const int order = getSelectedNodeOrder();
+		if ( order >= 0 )
+			showStats( order );
+		else
+			showEmpty();
 	}
 
 private:
@@ -184,6 +224,12 @@ private:
 };
 
 static NodeStatsPanel* g_statsPanel = nullptr;
+
+static void updateStatsPanelFromSelection( const Selectable& ) {
+	if ( !g_statsPanel || !g_statsPanel->isVisible() ) return;
+	if ( !g_statsPanel->autoFromSelectionEnabled() ) return;
+	g_statsPanel->updateFromSelection();
+}
 
 // ── Renderable ────────────────────────────────────────────────────────────────
 
@@ -290,11 +336,7 @@ public:
 			if ( g_statsPanel ) {
 				g_statsPanel->show();
 				g_statsPanel->raise();
-				int order = getSelectedNodeOrder();
-				if ( order >= 0 )
-					g_statsPanel->showStats( order );
-				else
-					g_statsPanel->showEmpty();
+				g_statsPanel->updateFromSelection();
 			}
 		});
 
@@ -359,8 +401,11 @@ static void ensureTimeline() {
 }
 
 static void ensureStatsPanel() {
-	if ( !g_statsPanel )
+	if ( !g_statsPanel ) {
 		g_statsPanel = new NodeStatsPanel( g_mainWindow );
+		typedef FreeCaller<void(const Selectable&), updateStatsPanelFromSelection> StatsPanelSelectionChangedCaller;
+		GlobalSelectionSystem().addSelectionChangeCallback( StatsPanelSelectionChangedCaller() );
+	}
 }
 
 // ── Menu dispatch ─────────────────────────────────────────────────────────────
@@ -452,11 +497,7 @@ void dispatch( const char* command, float*, float*, bool ) {
 		ensureStatsPanel();
 		g_statsPanel->show();
 		g_statsPanel->raise();
-		int order = getSelectedNodeOrder();
-		if ( order >= 0 )
-			g_statsPanel->showStats( order );
-		else
-			g_statsPanel->showEmpty();
+		g_statsPanel->updateFromSelection();
 		return;
 	}
 }
@@ -469,6 +510,7 @@ class BotVizPluginDependencies :
 	public GlobalRadiantModuleRef,
 	public GlobalSceneGraphModuleRef,
 	public GlobalEntityModuleRef,
+	public GlobalSelectionModuleRef,
 	public GlobalShaderCacheModuleRef,
 	public GlobalOpenGLModuleRef,
 	public GlobalOpenGLStateLibraryModuleRef
