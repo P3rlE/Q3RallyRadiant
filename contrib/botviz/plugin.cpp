@@ -32,6 +32,7 @@
 #include <QGroupBox>
 #include <QSpinBox>
 #include <QString>
+#include <QComboBox>
 
 #include <map>
 
@@ -223,6 +224,8 @@ class TimelineDialog : public QDialog {
 	QLabel*  m_lblTime;
 	QLabel*  m_lblSpeed;
 	QLabel*  m_lblState;
+	QLabel*  m_lblLegend;
+	QComboBox* m_modeCombo;
 
 public:
 	TimelineDialog( QWidget* parent ) : QDialog( parent, Qt::Tool ) {
@@ -247,6 +250,25 @@ public:
 		m_slider->setMaximum( 0 );
 		connect( m_slider, &QSlider::valueChanged, this, &TimelineDialog::onSlider );
 		vbox->addWidget( m_slider );
+
+		auto* modeRow = new QHBoxLayout;
+		modeRow->addWidget( new QLabel( "View mode:" ) );
+		m_modeCombo = new QComboBox;
+		m_modeCombo->addItem( "Route" );
+		m_modeCombo->addItem( "Heatmap" );
+		connect( m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), []( int idx ) {
+			BotViz::instance().renderMode =
+				( idx == 1 ) ? BotVizRenderMode::Heatmap : BotVizRenderMode::Route;
+			SceneChangeNotify();
+		} );
+		modeRow->addWidget( m_modeCombo );
+		modeRow->addStretch();
+		vbox->addLayout( modeRow );
+
+		m_lblLegend = new QLabel(
+			"Legend (Heatmap): blue = low collision risk, red = high collision risk" );
+		m_lblLegend->setStyleSheet( "color: #7aa7d9; padding-bottom: 6px;" );
+		vbox->addWidget( m_lblLegend );
 
 		auto* btnRow = new QHBoxLayout;
 
@@ -276,9 +298,30 @@ public:
 			}
 		});
 
+		auto* btnExport = new QPushButton( "Export Aggregation..." );
+		connect( btnExport, &QPushButton::clicked, [this]() {
+			if ( !BotViz::instance().isLoaded() ) return;
+			QString path = QFileDialog::getSaveFileName(
+				this, "Export Aggregated Route Data", QString(),
+				"CSV files (*.csv);;JSON files (*.json)" );
+			if ( path.isEmpty() ) return;
+			bool ok = false;
+			if ( path.endsWith( ".json", Qt::CaseInsensitive ) )
+				ok = BotViz::instance().exportBucketsJson( path.toUtf8().constData() );
+			else
+				ok = BotViz::instance().exportBucketsCsv( path.toUtf8().constData() );
+
+			if ( !ok ) {
+				GlobalRadiant().m_pfnMessageBox( this,
+					"Export failed. Ensure a JSONL file is loaded with resolvable route data.",
+					"BotViz", EMessageBoxType::Error, 0 );
+			}
+		} );
+
 		btnRow->addWidget( btnRefresh );
 		btnRow->addWidget( btnCollisions );
 		btnRow->addWidget( btnNodeStats );
+		btnRow->addWidget( btnExport );
 		btnRow->addStretch();
 		vbox->addLayout( btnRow );
 	}
@@ -286,6 +329,8 @@ public:
 	void reset( int frameCount ) {
 		m_slider->setMaximum( std::max( 0, frameCount - 1 ) );
 		m_slider->setValue( 0 );
+		m_modeCombo->setCurrentIndex(
+			BotViz::instance().renderMode == BotVizRenderMode::Heatmap ? 1 : 0 );
 		updateLabels( 0 );
 	}
 
