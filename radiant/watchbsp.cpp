@@ -330,7 +330,7 @@ bool BuildMonitor_ValidateRunAfterCompile( CopiedString& error ){
 		error = StringStream( "Engine-Datei nicht gefunden: ", exePath, "\nBitte den Pfad auf q3rally.exe in den Build Preferences prüfen." );
 		return false;
 	}
-	error.clear();
+	error = "";
 	return true;
 }
 bool BuildMonitor_GetRunAfterCompile(){
