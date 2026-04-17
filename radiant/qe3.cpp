@@ -40,6 +40,14 @@
 
 #include <QWidget>
 #include <QMessageBox>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QFormLayout>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QPlainTextEdit>
+#include <QDialogButtonBox>
+#include <QLabel>
 
 #include "stream/textfilestream.h"
 #include "commandlib.h"
@@ -56,6 +64,7 @@
 #include "preferences.h"
 #include "watchbsp.h"
 #include "autosave.h"
+#include "gtkutil/messagebox.h"
 
 QEGlobals_t g_qeglobals;
 
@@ -231,6 +240,117 @@ void RunBatch( const std::vector<CopiedString>& commands ){
 	}
 }
 
+enum class BuildProfile
+{
+	MinimalIteration,
+	Standard,
+	FinalQuality
+};
+
+BuildProfile g_buildProfile = BuildProfile::Standard;
+
+const char* buildProfileName( BuildProfile profile ){
+	switch ( profile )
+	{
+	case BuildProfile::MinimalIteration: return "Minimale Iteration (schnell)";
+	case BuildProfile::FinalQuality: return "Finale Qualität";
+	default: return "Standard";
+	}
+}
+
+CopiedString applyProfileToCommand( const CopiedString& command, BuildProfile profile ){
+	StringOutputStream out( 512 );
+	out << command;
+	if( profile == BuildProfile::MinimalIteration ){
+		if( strstr( command.c_str(), " -vis " ) != nullptr && strstr( command.c_str(), " -fast" ) == nullptr )
+			out << " -fast";
+		if( strstr( command.c_str(), " -light " ) != nullptr && strstr( command.c_str(), " -fast" ) == nullptr )
+			out << " -fast -samples 1";
+	}
+	else if( profile == BuildProfile::FinalQuality ){
+		if( strstr( command.c_str(), " -light " ) != nullptr ){
+			if( strstr( command.c_str(), " -samples " ) == nullptr )
+				out << " -samples 3";
+			if( strstr( command.c_str(), " -bounce " ) == nullptr )
+				out << " -bounce 8";
+			if( strstr( command.c_str(), " -filter" ) == nullptr )
+				out << " -filter";
+		}
+	}
+	return out.c_str();
+}
+
+std::vector<CopiedString> applyBuildProfile( const std::vector<CopiedString>& commands, BuildProfile profile ){
+	std::vector<CopiedString> result;
+	result.reserve( commands.size() );
+	for( const auto& command : commands )
+		result.emplace_back( applyProfileToCommand( command, profile ) );
+	return result;
+}
+
+bool BuildRunDialog( const std::vector<CopiedString>& baseCommands, std::vector<CopiedString>& selectedCommands ){
+	auto *dialog = new QDialog( MainFrame_getWindow(), Qt::Dialog | Qt::WindowCloseButtonHint );
+	dialog->setWindowTitle( "Build starten" );
+	dialog->setMinimumSize( 900, 450 );
+
+	auto *root = new QVBoxLayout( dialog );
+	root->addWidget( new QLabel( "Build-Pipeline-Konfigurationen (Gamepack/Install): default_build_menu.xml, build_menu.xml" ) );
+
+	auto *form = new QFormLayout;
+	auto *profileCombo = new QComboBox;
+	profileCombo->addItem( buildProfileName( BuildProfile::MinimalIteration ) );
+	profileCombo->addItem( buildProfileName( BuildProfile::Standard ) );
+	profileCombo->addItem( buildProfileName( BuildProfile::FinalQuality ) );
+	profileCombo->setCurrentIndex( static_cast<int>( g_buildProfile ) );
+	form->addRow( "Profil", profileCombo );
+
+	auto *runAfterCompile = new QCheckBox( "Run after compile (q3rally.exe)" );
+	runAfterCompile->setChecked( BuildMonitor_GetRunAfterCompile() );
+	form->addRow( "", runAfterCompile );
+	root->addLayout( form );
+
+	root->addWidget( new QLabel( "Kommandozeilenparameter (vor Start):" ) );
+	auto *preview = new QPlainTextEdit;
+	preview->setReadOnly( true );
+	root->addWidget( preview );
+
+	const auto updatePreview = [&](){
+		const auto profile = static_cast<BuildProfile>( profileCombo->currentIndex() );
+		const auto profiledCommands = applyBuildProfile( baseCommands, profile );
+		QString text;
+		for( const auto& command : profiledCommands ){
+			text += command.c_str();
+			text += '\n';
+		}
+		preview->setPlainText( text.trimmed() );
+	};
+	QObject::connect( profileCombo, &QComboBox::currentIndexChanged, dialog, [=]( int ){ updatePreview(); } );
+	updatePreview();
+
+	auto *buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
+	root->addWidget( buttons );
+	QObject::connect( buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept );
+	QObject::connect( buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject );
+
+	if( dialog->exec() != QDialog::DialogCode::Accepted ){
+		delete dialog;
+		return false;
+	}
+
+	g_buildProfile = static_cast<BuildProfile>( profileCombo->currentIndex() );
+	BuildMonitor_SetRunAfterCompile( runAfterCompile->isChecked() );
+	if( BuildMonitor_GetRunAfterCompile() ){
+		CopiedString error;
+		if( !BuildMonitor_ValidateRunAfterCompile( error ) ){
+			qt_MessageBox( MainFrame_getWindow(), error.c_str(), "Build", EMessageBoxType::Error );
+			delete dialog;
+			return false;
+		}
+	}
+	selectedCommands = applyBuildProfile( baseCommands, g_buildProfile );
+	delete dialog;
+	return true;
+}
 
 void RunBSP( size_t buildIdx ){
 	if( !g_region_active )
@@ -252,6 +372,8 @@ void RunBSP( size_t buildIdx ){
 	Pointfile_Delete();
 
 	std::vector<CopiedString> commands = build_construct_commands( buildIdx );
+	if( !BuildRunDialog( commands, commands ) )
+		return;
 	const auto bspname = StringStream<64>( PathFilename( Map_Name( g_map ) ) ); // grab the file name for engine running
 	BuildMonitor_Run( commands, bspname );
 }
