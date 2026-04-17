@@ -99,8 +99,12 @@ public:
 	int   frameCount()    const { return (int)m_frames.size(); }
 	bool  hasPositions()  const { return m_hasPositions; }
 	float duration()      const;
+	float startTime()     const;
+	float endTime()       const;
 	const std::string&  filePath()  const { return m_filePath; }
 	const BotFrame*     frame( int i ) const;
+	int frameIndexForTime( float t ) const;
+	const RoutePoint* point( int i ) const;
 
 	// Node stats — keyed by bot_path_node order value
 	const NodeStats* nodeStats( int order ) const;

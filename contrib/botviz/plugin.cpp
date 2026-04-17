@@ -35,8 +35,11 @@
 #include <QString>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QTimer>
+#include <QElapsedTimer>
 
 #include <map>
+#include <cmath>
 
 // ── Scene walker: collect bot_path_node origins ───────────────────────────────
 
@@ -269,10 +272,21 @@ class TimelineDialog : public QDialog {
 	QSlider* m_slider;
 	QLabel*  m_lblFrame;
 	QLabel*  m_lblTime;
-	QLabel*  m_lblSpeed;
+	QLabel*  m_lblReplayTime;
+	QLabel*  m_lblPlaybackSpeed;
 	QLabel*  m_lblState;
 	QLabel*  m_lblLegend;
 	QComboBox* m_modeCombo;
+	QComboBox* m_speedCombo;
+	QPushButton* m_btnPlayPause;
+	QCheckBox* m_chkLoop;
+	QCheckBox* m_chkFollowBot;
+	QTimer* m_playTimer;
+	QElapsedTimer m_elapsed;
+
+	bool m_isPlaying = false;
+	float m_playbackRate = 1.f;
+	float m_playbackTime = 0.f;
 
 public:
 	TimelineDialog( QWidget* parent ) : QDialog( parent, Qt::Tool ) {
@@ -283,12 +297,14 @@ public:
 
 		auto* infoRow = new QHBoxLayout;
 		m_lblFrame = new QLabel( "Frame: —" );
-		m_lblTime  = new QLabel( "t: —" );
-		m_lblSpeed = new QLabel( "Speed: —" );
+		m_lblTime  = new QLabel( "Frame t: —" );
+		m_lblReplayTime = new QLabel( "Replay: —" );
+		m_lblPlaybackSpeed = new QLabel( "Playback: 1.00x" );
 		m_lblState = new QLabel( "—" );
 		infoRow->addWidget( m_lblFrame );
 		infoRow->addWidget( m_lblTime );
-		infoRow->addWidget( m_lblSpeed );
+		infoRow->addWidget( m_lblReplayTime );
+		infoRow->addWidget( m_lblPlaybackSpeed );
 		infoRow->addWidget( m_lblState );
 		vbox->addLayout( infoRow );
 
@@ -297,6 +313,33 @@ public:
 		m_slider->setMaximum( 0 );
 		connect( m_slider, &QSlider::valueChanged, this, &TimelineDialog::onSlider );
 		vbox->addWidget( m_slider );
+
+		auto* playbackRow = new QHBoxLayout;
+		m_btnPlayPause = new QPushButton( "Play" );
+		connect( m_btnPlayPause, &QPushButton::clicked, this, &TimelineDialog::onPlayPause );
+		auto* btnStep = new QPushButton( "Step" );
+		connect( btnStep, &QPushButton::clicked, this, &TimelineDialog::onStep );
+		m_chkLoop = new QCheckBox( "Loop" );
+		m_chkFollowBot = new QCheckBox( "Follow bot" );
+		m_chkFollowBot->setToolTip( "Follows replay frame in 3D view (camera movement is currently unavailable in plugin ABI)." );
+		playbackRow->addWidget( m_btnPlayPause );
+		playbackRow->addWidget( btnStep );
+		playbackRow->addWidget( m_chkLoop );
+		playbackRow->addWidget( m_chkFollowBot );
+		playbackRow->addWidget( new QLabel( "Speed:" ) );
+		m_speedCombo = new QComboBox;
+		m_speedCombo->addItem( "0.25x", 0.25 );
+		m_speedCombo->addItem( "0.5x", 0.50 );
+		m_speedCombo->addItem( "1x", 1.00 );
+		m_speedCombo->addItem( "2x", 2.00 );
+		m_speedCombo->setCurrentIndex( 2 );
+		connect( m_speedCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), [this]( int idx ) {
+			m_playbackRate = (float)m_speedCombo->itemData( idx ).toDouble();
+			updateLabels( BotViz::instance().playhead );
+		} );
+		playbackRow->addWidget( m_speedCombo );
+		playbackRow->addStretch();
+		vbox->addLayout( playbackRow );
 
 		auto* modeRow = new QHBoxLayout;
 		modeRow->addWidget( new QLabel( "View mode:" ) );
@@ -367,29 +410,105 @@ public:
 		btnRow->addWidget( btnExport );
 		btnRow->addStretch();
 		vbox->addLayout( btnRow );
+
+		m_playTimer = new QTimer( this );
+		m_playTimer->setInterval( 16 );
+		connect( m_playTimer, &QTimer::timeout, this, &TimelineDialog::onPlaybackTick );
 	}
 
 	void reset( int frameCount ) {
+		stopPlayback();
 		m_slider->setMaximum( std::max( 0, frameCount - 1 ) );
 		m_slider->setValue( 0 );
+		m_playbackTime = BotViz::instance().startTime();
+		BotViz::instance().playhead = 0;
 		m_modeCombo->setCurrentIndex(
 			BotViz::instance().renderMode == BotVizRenderMode::Heatmap ? 1 : 0 );
 		updateLabels( 0 );
 	}
 
 private:
-	void onSlider( int value ) {
+	void stopPlayback() {
+		m_isPlaying = false;
+		if ( m_playTimer ) m_playTimer->stop();
+		if ( m_btnPlayPause ) m_btnPlayPause->setText( "Play" );
+	}
+
+	void onPlayPause() {
+		if ( !BotViz::instance().isLoaded() ) return;
+		m_isPlaying = !m_isPlaying;
+		if ( m_isPlaying ) {
+			m_elapsed.restart();
+			m_playTimer->start();
+			m_btnPlayPause->setText( "Pause" );
+		}
+		else {
+			stopPlayback();
+		}
+	}
+
+	void onStep() {
+		if ( !BotViz::instance().isLoaded() ) return;
+		stopPlayback();
+		const int maxFrame = std::max( 0, BotViz::instance().frameCount() - 1 );
+		const int nextFrame = std::min( maxFrame, BotViz::instance().playhead + 1 );
+		setPlayhead( nextFrame );
+	}
+
+	void onPlaybackTick() {
+		if ( !m_isPlaying || !BotViz::instance().isLoaded() ) return;
+		const float dt = (float)m_elapsed.restart() / 1000.f;
+		const float start = BotViz::instance().startTime();
+		const float end = BotViz::instance().endTime();
+		if ( end <= start ) {
+			stopPlayback();
+			return;
+		}
+		m_playbackTime += dt * m_playbackRate;
+		if ( m_playbackTime > end ) {
+			if ( m_chkLoop->isChecked() ) {
+				const float span = end - start;
+				m_playbackTime = start + std::fmod( m_playbackTime - start, span );
+			}
+			else {
+				m_playbackTime = end;
+				stopPlayback();
+			}
+		}
+		const int frameIdx = BotViz::instance().frameIndexForTime( m_playbackTime );
+		if ( frameIdx >= 0 )
+			setPlayhead( frameIdx );
+	}
+
+	void setPlayhead( int value ) {
 		BotViz::instance().playhead = value;
+		const BotFrame* fr = BotViz::instance().frame( value );
+		if ( fr ) m_playbackTime = fr->time;
+		const bool blocked = m_slider->blockSignals( true );
+		m_slider->setValue( value );
+		m_slider->blockSignals( blocked );
 		updateLabels( value );
+		applyFollowBot( value );
 		SceneChangeNotify();
+	}
+
+	void onSlider( int value ) {
+		setPlayhead( value );
+	}
+
+	void applyFollowBot( int frame ) {
+		if ( !m_chkFollowBot || !m_chkFollowBot->isChecked() ) return;
+		// Follow marker is currently visual-only; camera write access is not exposed through plugin ABI.
+		(void)frame;
 	}
 
 	void updateLabels( int frame ) {
 		const BotFrame* fr = BotViz::instance().frame( frame );
 		if ( !fr ) return;
 		m_lblFrame->setText( QString("Frame: %1 / %2").arg(frame).arg(BotViz::instance().frameCount()-1) );
-		m_lblTime->setText(  QString("t=%1s").arg(fr->time, 0, 'f', 2) );
-		m_lblSpeed->setText( QString("Speed: %1").arg((int)fr->actualSpeed) );
+		m_lblTime->setText(  QString("Frame t=%1s").arg(fr->time, 0, 'f', 2) );
+		m_lblReplayTime->setText( QString("Replay=%1s / %2s").arg(m_playbackTime, 0, 'f', 2).arg(BotViz::instance().endTime(), 0, 'f', 2) );
+		m_lblPlaybackSpeed->setText( QString("Playback: %1x").arg(m_playbackRate, 0, 'f', 2) );
 		m_lblState->setText( QString(fr->decisionState) );
 	}
 };
