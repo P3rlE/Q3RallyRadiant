@@ -324,7 +324,7 @@ bool BuildRunDialog( const std::vector<CopiedString>& baseCommands, std::vector<
 		}
 		preview->setPlainText( text.trimmed() );
 	};
-	QObject::connect( profileCombo, &QComboBox::currentIndexChanged, dialog, [=]( int ){ updatePreview(); } );
+	QObject::connect( profileCombo, qOverload<int>( &QComboBox::currentIndexChanged ), dialog, [=]( int ){ updatePreview(); } );
 	updatePreview();
 
 	auto *buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
