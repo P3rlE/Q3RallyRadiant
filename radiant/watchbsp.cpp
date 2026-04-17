@@ -51,6 +51,8 @@
 #include "sockets.h"
 #include "timer.h"
 #include "qe3.h"
+#include "os/path.h"
+#include "os/file.h"
 
 class CWatchBSP
 {
@@ -300,6 +302,42 @@ static StringOutputStream runEngineCmd( const char *bspName ){
 		cmd << a;
 	}
 	return cmd;
+}
+static bool runEngineCommandExecutablePath( StringOutputStream& outPath ){
+	const auto exe = [&](){
+		if( string_equal( gamemode_get(), "mp" ) ){
+			if( auto mpExe = g_engineExecutableMP.string(); !mpExe.empty() )
+				return mpExe;
+		}
+		return g_engineExecutable.string();
+	}();
+	if( exe.empty() )
+		return false;
+
+	if( path_is_absolute( exe.c_str() ) )
+		outPath( exe.c_str() );
+	else
+		outPath( EnginePath_get(), exe );
+	return true;
+}
+bool BuildMonitor_ValidateRunAfterCompile( CopiedString& error ){
+	StringOutputStream exePath( 256 );
+	if( !runEngineCommandExecutablePath( exePath ) ){
+		error = "Kein Engine-Executable konfiguriert. Bitte in Build Preferences eintragen (z. B. q3rally.exe).";
+		return false;
+	}
+	if( !file_exists( exePath.c_str() ) ){
+		error = StringStream( "Engine-Datei nicht gefunden: ", exePath, "\nBitte den Pfad auf q3rally.exe in den Build Preferences prüfen." );
+		return false;
+	}
+	error = "";
+	return true;
+}
+bool BuildMonitor_GetRunAfterCompile(){
+	return g_WatchBSP_RunQuake;
+}
+void BuildMonitor_SetRunAfterCompile( bool enabled ){
+	g_WatchBSP_RunQuake = enabled;
 }
 static void runEngine( char *cmd ){
 	globalOutputStream() << "Running engine...\n" << cmd << '\n';
@@ -588,6 +626,14 @@ bool CWatchBSP::SetupListening(){
 
 void CWatchBSP::DoEBeginStep(){
 	Reset();
+	if( g_WatchBSP_RunQuake ){
+		CopiedString error;
+		if( !BuildMonitor_ValidateRunAfterCompile( error ) ){
+			globalErrorStream() << error.c_str() << '\n';
+			qt_MessageBox( MainFrame_getWindow(), error.c_str(), "Build monitoring", EMessageBoxType::Error );
+			return;
+		}
+	}
 
 	if( m_iCurrentStep == m_commands.size() ){ // finita
 		if( g_WatchBSP_RunQuake )
