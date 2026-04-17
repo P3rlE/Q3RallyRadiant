@@ -122,9 +122,39 @@ float BotViz::duration() const {
 	return m_frames.back().time - m_frames.front().time;
 }
 
+float BotViz::startTime() const {
+	return m_frames.empty() ? 0.f : m_frames.front().time;
+}
+
+float BotViz::endTime() const {
+	return m_frames.empty() ? 0.f : m_frames.back().time;
+}
+
 const BotFrame* BotViz::frame( int i ) const {
 	if ( i < 0 || i >= (int)m_frames.size() ) return nullptr;
 	return &m_frames[i];
+}
+
+int BotViz::frameIndexForTime( float t ) const {
+	if ( m_frames.empty() ) return -1;
+	if ( t <= m_frames.front().time ) return 0;
+	if ( t >= m_frames.back().time ) return (int)m_frames.size() - 1;
+
+	auto it = std::lower_bound(
+		m_frames.begin(), m_frames.end(), t,
+		[]( const BotFrame& fr, float value ){ return fr.time < value; } );
+	if ( it == m_frames.end() ) return (int)m_frames.size() - 1;
+	if ( it == m_frames.begin() ) return 0;
+
+	const int idx = (int)( it - m_frames.begin() );
+	const float a = m_frames[idx - 1].time;
+	const float b = m_frames[idx].time;
+	return ( std::fabs( t - a ) <= std::fabs( b - t ) ) ? idx - 1 : idx;
+}
+
+const RoutePoint* BotViz::point( int i ) const {
+	if ( i < 0 || i >= (int)m_points.size() ) return nullptr;
+	return &m_points[i];
 }
 
 const NodeStats* BotViz::nodeStats( int order ) const {
