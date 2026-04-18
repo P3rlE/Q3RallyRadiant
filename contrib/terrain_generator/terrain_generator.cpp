@@ -22,6 +22,7 @@
 
 #include <random>
 #include <limits>
+#include <vector>
 
 #include "scenelib.h"
 
@@ -294,9 +295,12 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		auto *btn_widget   = new QWidget;
 		auto *btn_layout   = new QHBoxLayout( btn_widget );
 		btn_layout->setContentsMargins( 0, 12, 0, 0 ); // top spacing from fields
+		auto *preview_btn  = new QPushButton( "Preview" );
 		auto *generate_btn = new QPushButton( "Generate" );
 		auto *close_btn    = new QPushButton( "Close" );
 		btn_layout->addStretch();
+		btn_layout->addWidget( preview_btn );
+		btn_layout->addSpacing( 8 );
 		btn_layout->addWidget( generate_btn );
 		btn_layout->addSpacing( 8 );
 		btn_layout->addWidget( close_btn );
@@ -310,9 +314,25 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				lbl->setVisible( visible );
 		};
 
+		std::vector<scene::Node*> preview_entities;
+		bool preview_active = false;
+
+		auto clear_preview = [&](){
+			bool changed = false;
+			for ( scene::Node* node : preview_entities ) {
+				if ( node != nullptr ) {
+					Node_getTraversable( GlobalSceneGraph().root() )->erase( *node );
+					changed = true;
+				}
+			}
+			preview_entities.clear();
+			preview_active = false;
+			if ( changed )
+				SceneChangeNotify();
+		};
+
 		// Shared validation + generation — returns true on success.
-		// Called by both Generate and OK.
-		auto do_generate = [&]() -> bool {
+		auto do_generate = [&]( bool preview_mode ) -> bool {
 			if ( target_combo->currentIndex() == 0 && !query_sel().valid ) {
 				GlobalRadiant().m_pfnMessageBox( main_window,
 					"No valid brush is selected.\n\n"
@@ -411,11 +431,15 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			                           : shape_height_spin->value();
 
 			// --- Delete the selection brush now that its bounds are captured ---
-			if ( !use_manual ) {
+			if ( !use_manual && !preview_mode ) {
 				const int sel_count = (int)GlobalSelectionSystem().countSelected();
 				for ( int i = 0; i < sel_count && GlobalSelectionSystem().countSelected() > 0; ++i )
 					Path_deleteTop( GlobalSelectionSystem().ultimateSelected().path() );
 				SceneChangeNotify();
+			}
+
+			if ( preview_mode ) {
+				clear_preview();
 			}
 
 			adjust_bounds_to_fit_grid( target, step_x, step_y );
@@ -431,27 +455,47 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			                     << ", seed: " << seed
 			                     << ", texture: " << texture << "\n";
 
+			TerrainBuildOptions build_options;
+			build_options.preview  = preview_mode;
+			build_options.undoable = !preview_mode;
+
 			if ( is_tunnel ) {
 				const double cave_height    = ( shape == ShapeType::SlopeTunnel ) ? tun_height   : shape_height;
 				const double slope_height   = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0;
 				const double tunnel_terrace = ( shape == ShapeType::SlopeTunnel ) ? terrace      : 0.0;
 				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, noise, tunnel_terrace, seed );
-				build_tunnel_brushes( target, step_x, step_y, maps, texture, cave_height, slope_height );
+				build_tunnel_brushes( target, step_x, step_y, maps, texture, cave_height, slope_height,
+				                     build_options, preview_mode ? &preview_entities : nullptr );
 			}
 			else {
 				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
 				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, noise, terrace, seed );
-				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally );
+				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally,
+				                      build_options, preview_mode ? &preview_entities : nullptr );
 			}
 
 			g_last_seed = seed;
 			g_has_last_seed = true;
+			preview_active = preview_mode;
 			globalOutputStream() << "TerrainGenerator: generation complete\n";
 			return true;
 		};
 
-		QObject::connect( generate_btn, &QPushButton::clicked, [&](){ do_generate(); } );
-		QObject::connect( close_btn,    &QPushButton::clicked, &dialog, &QDialog::reject );
+		auto rerender_preview_if_active = [&](){
+			if ( preview_active ) {
+				do_generate( true );
+			}
+		};
+
+		QObject::connect( preview_btn,  &QPushButton::clicked, [&](){ do_generate( true ); } );
+		QObject::connect( generate_btn, &QPushButton::clicked, [&](){
+			clear_preview();
+			do_generate( false );
+		} );
+		QObject::connect( close_btn,    &QPushButton::clicked, [&](){
+			clear_preview();
+			dialog.reject();
+		} );
 
 		// Shape height label per shape type (index matches ShapeType enum value)
 		static const char* shape_height_label[] = {
@@ -533,6 +577,25 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_target_mode );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   update_advanced );
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), update_shape );
+		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
+		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( noise_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( use_ref_cb,   &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
+		QObject::connect( auto_seed_cb, &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
+		QObject::connect( manual_w_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( manual_l_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( manual_h_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( step_x_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( step_y_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( shape_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( tunnel_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( terrace_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( variance_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( frequency_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( seed_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( texture_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
+
 		QObject::connect( auto_seed_cb, &QCheckBox::toggled, [&]( bool checked ){
 			seed_spin->setEnabled( !checked );
 			if ( checked )
@@ -553,6 +616,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			QObject::connect( &dialog, &QDialog::finished, &loop, &QEventLoop::quit );
 			loop.exec();
 		}
+		clear_preview();
 	}
 }
 
