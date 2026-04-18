@@ -113,7 +113,7 @@ jobs:
           - arch: arm64
             runner: macos-latest
           - arch: x86_64
-            runner: macos-12
+            runner: macos-13
 
     steps:
       - uses: actions/checkout@v4
@@ -149,6 +149,8 @@ jobs:
           export LIBS_QTGUI="$(pkg-config Qt5Gui --libs)"
           export LIBS_QTWIDGETS="$(pkg-config Qt5Widgets --libs)"
           export LIBS_QTSVG="$(pkg-config Qt5Svg --libs)"
+          # Fix: macOS hat kein libGL — stattdessen OpenGL.framework verwenden
+          export LIBS_GL="-framework OpenGL"
           # Fix: macOS hat kein <GL/gl.h>, nur <OpenGL/gl.h> — Symlink als Shim anlegen
           sudo mkdir -p /usr/local/include/GL
           sudo ln -sf "$(xcrun --show-sdk-path)/System/Library/Frameworks/OpenGL.framework/Headers/gl.h" /usr/local/include/GL/gl.h
