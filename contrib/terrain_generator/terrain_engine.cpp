@@ -2,9 +2,10 @@
 #include "noise.h"
 
 #include <cmath>
-#include <cstdlib>
 #include <algorithm>
 #include <numbers>
+#include <random>
+#include <cstdint>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -14,15 +15,33 @@ static double round2( double v ){
 	return std::round( v * 100.0 ) / 100.0;
 }
 
-static double random_double(){
-	return (double)std::rand() / (double)RAND_MAX;
+class TerrainRng
+{
+	std::mt19937 m_engine;
+	std::uniform_real_distribution<double> m_dist;
+public:
+	explicit TerrainRng( std::uint32_t seed ) : m_engine( seed ), m_dist( 0.0, 1.0 ){}
+
+	double random_double(){
+		return m_dist( m_engine );
+	}
+};
+
+static std::uint32_t mix_seed( std::uint32_t base_seed, std::uint32_t salt ){
+	std::uint32_t x = base_seed ^ salt;
+	x ^= x >> 16;
+	x *= 0x7feb352dU;
+	x ^= x >> 15;
+	x *= 0x846ca68bU;
+	x ^= x >> 16;
+	return x;
 }
 
-static double sample_noise( NoiseType noise_type, double x, double y ){
+static double sample_noise( NoiseType noise_type, double x, double y, TerrainRng& rng ){
 	switch ( noise_type ) {
 	case NoiseType::Perlin:  return Perlin::noise( x, y );
 	case NoiseType::Simplex: return Simplex::noise( x, y );
-	default:                 return random_double() * 2.0 - 1.0;
+	default:                 return rng.random_double() * 2.0 - 1.0;
 	}
 }
 
@@ -67,11 +86,13 @@ void adjust_bounds_to_fit_grid( BrushData& target, double step_x, double step_y 
 HeightMap generate_height_map( const BrushData& target, double step_x, double step_y,
                                 ShapeType shape_type, double shape_height,
                                 double variance, double frequency,
-                                NoiseType noise_type, double terrace_step ){
+                                NoiseType noise_type, double terrace_step,
+                                int seed ){
 	HeightMap height_map;
+	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
 
-	double seed_x = random_double() * 10000.0;
-	double seed_y = random_double() * 10000.0;
+	double seed_x = rng.random_double() * 10000.0;
+	double seed_y = rng.random_double() * 10000.0;
 
 	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
 		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
@@ -119,11 +140,11 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 			double noise_z = 0.0;
 			if ( variance > 0.0 ) {
 				if ( noise_type == NoiseType::Random ) {
-					noise_z = ( random_double() * ( variance * 2.0 ) ) - variance;
+					noise_z = ( rng.random_double() * ( variance * 2.0 ) ) - variance;
 				} else {
 					noise_z = sample_noise( noise_type,
 					                        ( x + seed_x ) * frequency,
-					                        ( y + seed_y ) * frequency ) * variance;
+					                        ( y + seed_y ) * frequency, rng ) * variance;
 				}
 			}
 
@@ -145,15 +166,21 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
                                         double cave_height, double slope_height,
                                         double variance, double frequency,
-                                        NoiseType noise_type, double terrace_step ){
+                                        NoiseType noise_type, double terrace_step,
+                                        int seed ){
 	TunnelMaps result;
+	const std::uint32_t base_seed = static_cast<std::uint32_t>( seed );
+	TerrainRng floor_rng( mix_seed( base_seed, 0x1f123bb5U ) );
+	TerrainRng ceil_rng(  mix_seed( base_seed, 0xa8b7c421U ) );
+	TerrainRng wall_l_rng( mix_seed( base_seed, 0x736f6c4cU ) );
+	TerrainRng wall_r_rng( mix_seed( base_seed, 0x736f6c52U ) );
 
-	double seed_floor_x = random_double() * 10000.0;
-	double seed_floor_y = random_double() * 10000.0;
-	double seed_ceil_x  = random_double() * 10000.0;
-	double seed_ceil_y  = random_double() * 10000.0;
-	double seed_wall_l  = random_double() * 10000.0;
-	double seed_wall_r  = random_double() * 10000.0;
+	double seed_floor_x = floor_rng.random_double() * 10000.0;
+	double seed_floor_y = floor_rng.random_double() * 10000.0;
+	double seed_ceil_x  = ceil_rng.random_double() * 10000.0;
+	double seed_ceil_y  = ceil_rng.random_double() * 10000.0;
+	double seed_wall_l  = wall_l_rng.random_double() * 10000.0;
+	double seed_wall_r  = wall_r_rng.random_double() * 10000.0;
 
 	double center_x  = ( target.min_x + target.max_x ) / 2.0;
 	double half_width = target.width_x / 2.0;
@@ -167,13 +194,13 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 			double floor_noise = 0.0, ceil_noise = 0.0;
 			if ( variance > 0.0 ) {
 				if ( noise_type == NoiseType::Random ) {
-					floor_noise = random_double() * variance;
-					ceil_noise  = random_double() * variance;
+					floor_noise = floor_rng.random_double() * variance;
+					ceil_noise  = ceil_rng.random_double() * variance;
 				} else {
 					floor_noise = std::abs( sample_noise( noise_type,
-					    ( x + seed_floor_x ) * frequency, ( y + seed_floor_y ) * frequency ) ) * variance;
+					    ( x + seed_floor_x ) * frequency, ( y + seed_floor_y ) * frequency, floor_rng ) ) * variance;
 					ceil_noise  = std::abs( sample_noise( noise_type,
-					    ( x + seed_ceil_x  ) * frequency, ( y + seed_ceil_y  ) * frequency ) ) * variance;
+					    ( x + seed_ceil_x  ) * frequency, ( y + seed_ceil_y  ) * frequency, ceil_rng ) ) * variance;
 				}
 			}
 
@@ -216,10 +243,10 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 			double wall_noise = 0.0;
 			if ( variance > 0.0 ) {
 				if ( noise_type == NoiseType::Random ) {
-					wall_noise = random_double() * variance;
+					wall_noise = wall_l_rng.random_double() * variance;
 				} else {
 					wall_noise = std::abs( sample_noise( noise_type,
-					    ( y + seed_wall_l ) * frequency, ( z + seed_wall_l ) * frequency ) ) * variance;
+					    ( y + seed_wall_l ) * frequency, ( z + seed_wall_l ) * frequency, wall_l_rng ) ) * variance;
 				}
 			}
 			result.left_wall_map[{ ry, rz }] = std::round( target.min_x + wall_noise );
@@ -227,10 +254,10 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 			wall_noise = 0.0;
 			if ( variance > 0.0 ) {
 				if ( noise_type == NoiseType::Random ) {
-					wall_noise = random_double() * variance;
+					wall_noise = wall_r_rng.random_double() * variance;
 				} else {
 					wall_noise = std::abs( sample_noise( noise_type,
-					    ( y + seed_wall_r ) * frequency, ( z + seed_wall_r ) * frequency ) ) * variance;
+					    ( y + seed_wall_r ) * frequency, ( z + seed_wall_r ) * frequency, wall_r_rng ) ) * variance;
 				}
 			}
 			result.right_wall_map[{ ry, rz }] = std::round( target.max_x - wall_noise );
