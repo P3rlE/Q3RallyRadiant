@@ -361,7 +361,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		seed_hbox->addStretch();
 		form->addRow( "Seed:", seed_widget );
 
-		// Texture — line edit + Pick button to grab from texture browser
+		// Texture slots — base + optional material slots
 		auto *tex_widget = new QWidget;
 		auto *tex_hbox   = new QHBoxLayout( tex_widget );
 		tex_hbox->setContentsMargins( 0, 0, 0, 0 );
@@ -405,7 +405,29 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			close_browser_on_pick = !GlobalRadiant().TextureBrowser_isShown();
 			GlobalRadiant().TextureBrowser_show();
 		} );
-		form->addRow( "Texture:", tex_widget );
+		form->addRow( "Base Material:", tex_widget );
+
+		auto *steep_material_edit = new QLineEdit;
+		auto *peak_material_edit  = new QLineEdit;
+		auto *dirt_material_edit  = new QLineEdit;
+		auto *track_material_edit = new QLineEdit;
+		form->addRow( "Steep Material:", steep_material_edit );
+		form->addRow( "Peak Material:",  peak_material_edit );
+		form->addRow( "Dirt Material:",  dirt_material_edit );
+		form->addRow( "Track Material:", track_material_edit );
+
+		auto *steep_angle_spin = new DoubleSpinBox( 0.0, 89.0, 45.0, 1, 1 );
+		auto *peak_min_spin    = new DoubleSpinBox( 0.0, 100.0, 85.0, 1, 1 );
+		auto *dirt_min_spin    = new DoubleSpinBox( 0.0, 100.0, 20.0, 1, 1 );
+		auto *dirt_max_spin    = new DoubleSpinBox( 0.0, 100.0, 55.0, 1, 1 );
+		auto *track_min_spin   = new DoubleSpinBox( 0.0, 100.0, 40.0, 1, 1 );
+		auto *track_max_spin   = new DoubleSpinBox( 0.0, 100.0, 48.0, 1, 1 );
+		form->addRow( "Steep Angle (°):", steep_angle_spin );
+		form->addRow( "Peak Min Height (%):", peak_min_spin );
+		form->addRow( "Dirt Min Height (%):", dirt_min_spin );
+		form->addRow( "Dirt Max Height (%):", dirt_max_spin );
+		form->addRow( "Track Min Height (%):", track_min_spin );
+		form->addRow( "Track Max Height (%):", track_max_spin );
 
 		// Generate (generate without closing) + Close
 		// Buttons: Generate (left) — Close (right), explicit layout so the
@@ -497,6 +519,25 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 			const std::string texture_str = texture_edit->text().toStdString();
 			const char* texture       = texture_str.c_str();
+			const std::string steep_texture_str = steep_material_edit->text().trimmed().toStdString();
+			const std::string peak_texture_str  = peak_material_edit->text().trimmed().toStdString();
+			const std::string dirt_texture_str  = dirt_material_edit->text().trimmed().toStdString();
+			const std::string track_texture_str = track_material_edit->text().trimmed().toStdString();
+			const TerrainMaterialSlots material_slots{
+				texture,
+				steep_texture_str.empty() ? nullptr : steep_texture_str.c_str(),
+				peak_texture_str.empty()  ? nullptr : peak_texture_str.c_str(),
+				dirt_texture_str.empty()  ? nullptr : dirt_texture_str.c_str(),
+				track_texture_str.empty() ? nullptr : track_texture_str.c_str()
+			};
+			const TerrainMaterialRules material_rules{
+				steep_angle_spin->value(),
+				peak_min_spin->value(),
+				dirt_min_spin->value(),
+				dirt_max_spin->value(),
+				track_min_spin->value(),
+				track_max_spin->value()
+			};
 			if ( mask_preset == MaskPreset::ImageImport ) {
 				const QString mask_path = mask_image_edit->text().trimmed();
 				if ( mask_path.isEmpty() || QImage( mask_path ).isNull() ) {
@@ -603,14 +644,14 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				const double slope_height   = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0;
 				const double tunnel_terrace = ( shape == ShapeType::SlopeTunnel ) ? terrace      : 0.0;
 				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, mask_map, noise, tunnel_terrace, seed );
-				build_tunnel_brushes( target, step_x, step_y, maps, texture, cave_height, slope_height,
+				build_tunnel_brushes( target, step_x, step_y, maps, texture, material_slots, material_rules, cave_height, slope_height,
 				                     build_options, preview_mode ? &preview_entities : nullptr );
 			}
 			else {
 				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
 				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, mask_map,
 				                                      noise, terrace, curve_radius, bank_angle, ramp_length, post_process, seed );
-				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally,
+				build_terrain_brushes( target, step_x, step_y, height_map, texture, material_slots, material_rules, split_diagonally,
 				                      build_options, preview_mode ? &preview_entities : nullptr );
 			}
 
@@ -815,6 +856,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( mask_image_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
 		QObject::connect( seed_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( texture_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
+		QObject::connect( steep_material_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
+		QObject::connect( peak_material_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
+		QObject::connect( dirt_material_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
+		QObject::connect( track_material_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
+		QObject::connect( steep_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( peak_min_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( dirt_min_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( dirt_max_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_min_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_max_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 
 		QObject::connect( auto_seed_cb, &QCheckBox::toggled, [&]( bool checked ){
 			seed_spin->setEnabled( !checked );
