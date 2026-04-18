@@ -105,8 +105,9 @@ LIBS_ZLIB          ?= -lz
 CPPFLAGS_JPEG      ?=
 LIBS_JPEG          ?= -ljpeg
 DEPEND_ON_MAKEFILE ?= yes
-# yes = download; all = even download undistributable gamepacks; no = disable; allinone = dl all-in-one compact fixed archive
-DOWNLOAD_GAMEPACKS ?= allinone
+# yes = download; all = even download undistributable gamepacks; no = disable; allinone = dl all-in-one compact fixed archive; q3rally = Q3RallyPack only
+DOWNLOAD_GAMEPACKS ?= q3rally
+PACKFILTER         ?= Q3RallyPack
 INSTALL_DLLS       ?= yes
 INSTALL_DATA       ?= yes
 
@@ -290,10 +291,14 @@ ifneq "$(filter MINGW64_NT%,$(UNAME_S))" ""
 endif
 
 # VERSION!
-RADIANT_VERSION_NUMBER = 1.6.0
-RADIANT_VERSION = $(RADIANT_VERSION_NUMBER)n
-RADIANT_MAJOR_VERSION = 6
-RADIANT_MINOR_VERSION = 0
+# Q3Rally scheme:
+#   RADIANT_VERSION_NUMBER = <year>.<minor>-q3r   (example: 2026.1-q3r)
+#   RADIANT_MAJOR_VERSION  = <year>
+#   RADIANT_MINOR_VERSION  = <minor>
+RADIANT_VERSION_NUMBER ?= 2026.1-q3r
+RADIANT_VERSION ?= $(RADIANT_VERSION_NUMBER)
+RADIANT_MAJOR_VERSION ?= $(word 1,$(subst ., ,$(firstword $(subst -, ,$(RADIANT_VERSION_NUMBER)))))
+RADIANT_MINOR_VERSION ?= $(word 2,$(subst ., ,$(firstword $(subst -, ,$(RADIANT_VERSION_NUMBER)))))
 Q3MAP_VERSION = 2.5.17n
 
 # Executable extension
@@ -358,7 +363,7 @@ dependencies-check:
 	checkbinary pkg-config "$(PKGCONFIG)"; \
 	checkbinary unzip "$(UNZIPPER)"; \
 	checkbinary git-core "$(GIT)"; \
-	[ "$(DOWNLOAD_GAMEPACKS)" = "yes" ] || [ "$(DOWNLOAD_GAMEPACKS)" = "all" ] && checkbinary subversion "$(SVN)"; \
+	[ "$(DOWNLOAD_GAMEPACKS)" = "yes" ] || [ "$(DOWNLOAD_GAMEPACKS)" = "all" ] || [ "$(DOWNLOAD_GAMEPACKS)" = "q3rally" ] && checkbinary subversion "$(SVN)"; \
 	checkbinary wget "$(WGET)"; \
 	[ "$(OS)" = "Win32" ] && checkbinary mingw32 "$(WINDRES)"; \
 	[ -n "$(LDD)" ] && checkbinary libc6 "$(LDD)"; \
@@ -1400,9 +1405,9 @@ install-data: binaries
 ifeq ($(INSTALL_DATA),yes)
 	$(MKDIR) $(INSTALLDIR)/gamepacks/games
 	$(FIND) $(INSTALLDIR_BASE)/ -name .svn -exec $(RM_R) {} \; -prune
-	DOWNLOAD_GAMEPACKS="$(DOWNLOAD_GAMEPACKS)" GIT="$(GIT)" SVN="$(SVN)" WGET="$(WGET)" RM_R="$(RM_R)" MV="$(MV)" UNZIPPER="$(UNZIPPER)" ECHO="$(ECHO)" SH="$(SH)" CP="$(CP)" CP_R="$(CP_R)" $(SH) install-gamepacks.sh "$(INSTALLDIR)/gamepacks"
-	$(ECHO) $(RADIANT_MINOR_VERSION) > $(INSTALLDIR)/RADIANT_MINOR
-	$(ECHO) $(RADIANT_MAJOR_VERSION) > $(INSTALLDIR)/RADIANT_MAJOR
+	DOWNLOAD_GAMEPACKS="$(DOWNLOAD_GAMEPACKS)" PACKFILTER="$(PACKFILTER)" GIT="$(GIT)" SVN="$(SVN)" WGET="$(WGET)" RM_R="$(RM_R)" MV="$(MV)" UNZIPPER="$(UNZIPPER)" ECHO="$(ECHO)" SH="$(SH)" CP="$(CP)" CP_R="$(CP_R)" $(SH) install-gamepacks.sh "$(INSTALLDIR)/gamepacks"
+	$(ECHO) $(RADIANT_MINOR_VERSION) > $(INSTALLDIR)/Q3RALLY_RADIANT_MINOR
+	$(ECHO) $(RADIANT_MAJOR_VERSION) > $(INSTALLDIR)/Q3RALLY_RADIANT_MAJOR
 	$(CP_R) setup/data/tools/* $(INSTALLDIR)/
 	$(MKDIR) $(INSTALLDIR)/docs
 	$(CP_R) docs/* $(INSTALLDIR)/docs/
@@ -1423,22 +1428,58 @@ endif
 # release building... NOT for general users
 # these may use tools not in the list that is checked by the build system
 release-src: BUILD_DATE := $(shell date +%Y%m%d)
-release-src: INSTALLDIR := netradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
+release-src: INSTALLDIR := q3rallyradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
 release-src:
 	$(GIT) archive --format=tar --prefix=$(INSTALLDIR)/ HEAD | bzip2 > ../$(INSTALLDIR).tar.bz2
 
 release-win32: BUILD_DATE := $(shell date +%Y%m%d)
-release-win32: INSTALLDIR := netradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
+release-win32: INSTALLDIR := q3rallyradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
+release-win32: PACKFILTER := Q3RallyPack
+release-win32: DOWNLOAD_GAMEPACKS := q3rally
 release-win32:
-	$(MAKE) all INSTALLDIR=$(INSTALLDIR) MAKEFILE_CONF=cross-Makefile.conf RADIANT_ABOUTMSG="Official release build" BUILD=release
+	$(MAKE) all INSTALLDIR=$(INSTALLDIR) MAKEFILE_CONF=cross-Makefile.conf RADIANT_ABOUTMSG="Official release build" BUILD=release PACKFILTER="$(PACKFILTER)" DOWNLOAD_GAMEPACKS="$(DOWNLOAD_GAMEPACKS)"
+	$(MAKE) release-validate-gamepacks INSTALLDIR=$(INSTALLDIR) PACKFILTER="$(PACKFILTER)"
 	7za a -sfx../../../../../../../../../../$(HOME)/7z.sfx ../$(INSTALLDIR)-win32-7z.exe $(INSTALLDIR)/
 	chmod 644 ../$(INSTALLDIR)-win32-7z.exe # 7zip is evil
-	$(MAKE) clean INSTALLDIR=$(INSTALLDIR) MAKEFILE_CONF=cross-Makefile.conf RADIANT_ABOUTMSG="Official release build" BUILD=release
+	$(MAKE) clean INSTALLDIR=$(INSTALLDIR) MAKEFILE_CONF=cross-Makefile.conf RADIANT_ABOUTMSG="Official release build" BUILD=release PACKFILTER="$(PACKFILTER)" DOWNLOAD_GAMEPACKS="$(DOWNLOAD_GAMEPACKS)"
 
 release-all:
 	$(GIT) clean -xdf
 	$(MAKE) release-src
 	$(MAKE) release-win32
+
+.PHONY: release-validate-gamepacks
+release-validate-gamepacks:
+	@set -e; \
+	allowed="$${PACKFILTER:-Q3RallyPack}"; \
+	dir="$(INSTALLDIR)/gamepacks/games"; \
+	if [ ! -d "$$dir/$$allowed" ]; then \
+		$(ECHO) "ERROR: expected pack $$allowed missing from $$dir"; \
+		exit 1; \
+	fi; \
+	packs="$$(find "$$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)"; \
+	other="$$(printf '%s\n' "$$packs" | sed "/^$$allowed$$/d" | sed '/^$$/d')"; \
+	if [ -n "$$other" ]; then \
+		$(ECHO) "ERROR: unexpected gamepacks found in $$dir:"; \
+		$(ECHO) "$$other"; \
+		exit 1; \
+	fi; \
+	gamefiles="$$(find "$$dir" -mindepth 1 -maxdepth 1 -type f -name '*.game' -printf '%f\n' | sort)"; \
+	otherfiles="$$(printf '%s\n' "$$gamefiles" | sed "s/\\.game$$//" | sed "/^$$allowed$$/d" | sed '/^$$/d')"; \
+	if [ -n "$$otherfiles" ]; then \
+		$(ECHO) "ERROR: unexpected gamepack .game files found in $$dir:"; \
+		$(ECHO) "$$otherfiles"; \
+		exit 1; \
+	fi; \
+	rootdir="$(INSTALLDIR)/gamepacks"; \
+	rootgames="$$(find "$$rootdir" -mindepth 1 -maxdepth 1 -type d -name '*.game' -printf '%f\n' | sort)"; \
+	rootother="$$(printf '%s\n' "$$rootgames" | sed "s/\\.game$$//" | sed "/^$$allowed$$/d" | sed '/^$$/d')"; \
+	if [ -n "$$rootother" ]; then \
+		$(ECHO) "ERROR: unexpected gamepack directories found in $$rootdir:"; \
+		$(ECHO) "$$rootother"; \
+		exit 1; \
+	fi; \
+	$(ECHO) "Release gamepack validation OK: $$allowed only."
 
 # load dependency files
 -include $(shell find . -name \*.d)
