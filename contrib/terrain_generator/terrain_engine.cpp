@@ -87,6 +87,8 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
                                 ShapeType shape_type, double shape_height,
                                 double variance, double frequency,
                                 NoiseType noise_type, double terrace_step,
+                                double curve_radius, double banking_angle_deg,
+                                double ramp_length,
                                 int seed ){
 	HeightMap height_map;
 	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
@@ -131,6 +133,43 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 			case ShapeType::Valley: {
 				double dist = std::min( 1.0, std::abs( nx - 0.5 ) / 0.5 );
 				base_z = shape_height * 0.5 * ( 1.0 - std::cos( dist * std::numbers::pi ) );
+				break;
+			}
+			case ShapeType::BankedTurn: {
+				const double safe_radius = std::max( curve_radius, step_x * 2.0 );
+				const double turn_center_x = target.min_x + safe_radius;
+				const double turn_center_y = target.min_y + safe_radius;
+				const double dx = x - turn_center_x;
+				const double dy = y - turn_center_y;
+				const double r = std::sqrt( dx * dx + dy * dy );
+				const double lane_half = std::max( 64.0, target.width_x * 0.30 );
+				const double radial = std::clamp( ( r - safe_radius ) / lane_half, -1.0, 1.0 );
+				const double bank_angle_rad = std::clamp( banking_angle_deg, 0.0, 45.0 ) * std::numbers::pi / 180.0;
+				const double bank_z = radial * std::tan( bank_angle_rad ) * lane_half;
+				const double lane_shape = std::max( 0.0, 1.0 - std::abs( radial ) );
+				base_z = shape_height * lane_shape + bank_z;
+				break;
+			}
+			case ShapeType::Berm: {
+				const double berm_center = 0.82;
+				const double berm_half_width = 0.20;
+				const double dist = std::min( 1.0, std::abs( nx - berm_center ) / berm_half_width );
+				const double along = std::sin( ny * std::numbers::pi );
+				base_z = shape_height * 0.5 * ( 1.0 + std::cos( dist * std::numbers::pi ) ) * along;
+				break;
+			}
+			case ShapeType::JumpRamp: {
+				const double safe_ramp_len = std::max( ramp_length, step_x * 2.0 );
+				const double t = std::clamp( ( x - target.min_x ) / safe_ramp_len, 0.0, 1.0 );
+				const double eased = t * t * ( 3.0 - 2.0 * t );
+				base_z = shape_height * eased;
+				break;
+			}
+			case ShapeType::Whoops: {
+				const double safe_spacing = std::max( ramp_length, step_y * 2.0 );
+				const double wave = std::sin( ( y - target.min_y ) * ( 2.0 * std::numbers::pi / safe_spacing ) );
+				const double lane_mask = std::sin( nx * std::numbers::pi );
+				base_z = shape_height * 0.5 * ( wave + 1.0 ) * lane_mask;
 				break;
 			}
 			default:

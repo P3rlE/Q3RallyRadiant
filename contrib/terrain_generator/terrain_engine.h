@@ -27,7 +27,11 @@ enum class ShapeType {
 	Volcano     = 5,
 	Valley      = 6,
 	Tunnel      = 7,
-	SlopeTunnel = 8
+	SlopeTunnel = 8,
+	BankedTurn  = 9,
+	Berm        = 10,
+	JumpRamp    = 11,
+	Whoops      = 12
 };
 
 enum class NoiseType {
@@ -44,6 +48,8 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
                                 ShapeType shape_type, double shape_height,
                                 double variance, double frequency,
                                 NoiseType noise_type, double terrace_step,
+                                double curve_radius, double banking_angle_deg,
+                                double ramp_length,
                                 int seed );
 
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
