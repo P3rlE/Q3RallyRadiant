@@ -8,6 +8,7 @@
 #include "iundo.h"
 #include "qerplugin.h"
 #include "scenelib.h"
+#include <memory>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,10 +33,27 @@ static void fill_face( _QERFaceData& face,
 	face.value    = 0;
 }
 
-static scene::Node& create_func_group(){
+class UndoScope
+{
+	std::unique_ptr<UndoableCommand> m_command;
+public:
+	UndoScope( const char* command, bool enabled ){
+		if ( enabled ) {
+			m_command = std::make_unique<UndoableCommand>( command );
+		}
+	}
+};
+
+static scene::Node& create_func_group( const TerrainBuildOptions& options ){
 	EntityClass* ec = GlobalEntityClassManager().findOrInsert( "func_group", true );
 	NodeSmartReference entity( GlobalEntityCreator().createEntity( ec ) );
 	Node_getTraversable( GlobalSceneGraph().root() )->insert( entity );
+	if ( options.preview ) {
+		if ( Entity* e = Node_getEntity( entity ) ) {
+			e->setKeyValue( "_terrain_generator_preview", "1" );
+			e->setKeyValue( "name", "terrain_generator_preview" );
+		}
+	}
 	return entity;
 }
 
@@ -140,10 +158,14 @@ static void insert_brush_into( scene::Node& entity,
 
 void build_terrain_brushes( const BrushData& target, double step_x, double step_y,
                              const HeightMap& height_map, const char* top_texture,
-                             bool split_diagonally ){
-	UndoableCommand undo( "terrainGenerator.generateTerrain" );
+                             bool split_diagonally, const TerrainBuildOptions& options,
+                             std::vector<scene::Node*>* created_entities ){
+	UndoScope undo( "terrainGenerator.generateTerrain", options.undoable );
 
-	scene::Node& entity = create_func_group();
+	scene::Node& entity = create_func_group( options );
+	if ( created_entities != nullptr ) {
+		created_entities->push_back( &entity );
+	}
 
 	const char* caulk = "textures/common/caulk";
 	double min_z      = target.min_z;
@@ -353,13 +375,21 @@ static void insert_wall_brush( scene::Node& entity,
 
 void build_tunnel_brushes( const BrushData& target, double step_x, double step_y,
                             const TunnelMaps& maps, const char* top_texture,
-                            double cave_height, double slope_height ){
-	UndoableCommand undo( "terrainGenerator.generateTunnel" );
+                            double cave_height, double slope_height,
+                            const TerrainBuildOptions& options,
+                            std::vector<scene::Node*>* created_entities ){
+	UndoScope undo( "terrainGenerator.generateTunnel", options.undoable );
 
-	scene::Node& floor_entity  = create_func_group();
-	scene::Node& ceil_entity   = create_func_group();
-	scene::Node& lwall_entity  = create_func_group();
-	scene::Node& rwall_entity  = create_func_group();
+	scene::Node& floor_entity  = create_func_group( options );
+	scene::Node& ceil_entity   = create_func_group( options );
+	scene::Node& lwall_entity  = create_func_group( options );
+	scene::Node& rwall_entity  = create_func_group( options );
+	if ( created_entities != nullptr ) {
+		created_entities->push_back( &floor_entity );
+		created_entities->push_back( &ceil_entity );
+		created_entities->push_back( &lwall_entity );
+		created_entities->push_back( &rwall_entity );
+	}
 
 	const char* caulk    = "textures/common/caulk";
 	double min_z         = target.min_z;
