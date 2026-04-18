@@ -77,6 +77,21 @@ make install/radiant.x86_64 \
      -j$(nproc)
 ```
 
+### Release packaging (Q3Rally-only gamepack)
+
+For release builds, the Makefile now enforces a Q3Rally-only gamepack flow:
+
+- `DOWNLOAD_GAMEPACKS=q3rally` fetches only `Q3RallyPack` (instead of all-in-one/multi-pack).
+- `Q3RallyPack` is fetched from `https://github.com/Q3Rally-Team/q3rally` (path `tools/gamepacks`).
+- `PACKFILTER=Q3RallyPack` is forwarded into install scripts to avoid copying unrelated local packs.
+- `make release-win32` runs `release-validate-gamepacks` and fails if anything other than `Q3RallyPack` is present in `install/.../gamepacks/games/` (including stray `.game` entries).
+
+You can also run the validation manually for a custom install dir:
+
+```bash
+make release-validate-gamepacks INSTALLDIR=<your-install-dir> PACKFILTER=Q3RallyPack
+```
+
 ---
 
 ## Staying in sync with upstream
