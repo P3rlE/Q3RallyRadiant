@@ -138,9 +138,11 @@ jobs:
           export PKG_CONFIG_PATH="$QT5_DIR/lib/pkgconfig:$ASSIMP_DIR/lib/pkgconfig:$JPEG_DIR/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CPPFLAGS="-I$QT5_DIR/include -I$ASSIMP_DIR/include -I$JPEG_DIR/include $CPPFLAGS"
           export LDFLAGS="-L$QT5_DIR/lib -L$ASSIMP_DIR/lib -L$JPEG_DIR/lib $LDFLAGS"
-          # Fix: macOS verwendet <OpenGL/gl.h> statt <GL/gl.h>
-          export CFLAGS="-DGL_SILENCE_DEPRECATION -include OpenGL/gl.h $CFLAGS"
-          export CXXFLAGS="-DGL_SILENCE_DEPRECATION -include OpenGL/gl.h $CXXFLAGS"
+          # Fix: macOS hat kein <GL/gl.h>, nur <OpenGL/gl.h> — Symlink als Shim anlegen
+          sudo mkdir -p /usr/local/include/GL
+          sudo ln -sf "$(xcrun --show-sdk-path)/System/Library/Frameworks/OpenGL.framework/Headers/gl.h" /usr/local/include/GL/gl.h
+          export CFLAGS="-DGL_SILENCE_DEPRECATION $CFLAGS"
+          export CXXFLAGS="-DGL_SILENCE_DEPRECATION $CXXFLAGS"
           make DEPENDENCIES_CHECK=off -j4
 
       - name: Package macOS build
