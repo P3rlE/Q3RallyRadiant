@@ -807,7 +807,11 @@ protected:
 			event->ignore();
 			return;
 		}
-		ASSERT_MESSAGE( !m_drop, "dropEvent() without rowsInserted()" );
+		if( m_drop ){
+			globalErrorStream() << "dropEvent() without rowsInserted()\n";
+			event->ignore();
+			return;
+		}
 		m_drop = true;
 		QTreeWidget::dropEvent( event );
 	}
@@ -882,7 +886,10 @@ class QTreeWidget_commands : public QTreeWidget_drag
 	Build::iterator m_buildcommand_dragged;
 protected:
 	void startDrag( Qt::DropActions supportedActions ) override {
-		ASSERT_NOTNULL( g_current_build );
+		if( g_current_build == nullptr ){
+			globalErrorStream() << "startDrag() with null g_current_build\n";
+			return;
+		}
 		m_buildcommand_dragged = Build_find( *g_current_build, indexOfTopLevelItem( currentItem() ) );
 		QTreeWidget::startDrag( supportedActions );
 	}
@@ -891,7 +898,11 @@ protected:
 			+ horizontalScrollBar()->sizeHint().height() + frameWidth() * 2 );
 
 		if( std::exchange( m_drop, false ) ){ // insertion source is drop
-			ASSERT_NOTNULL( g_current_build );
+			if( g_current_build == nullptr ){
+				globalErrorStream() << "rowsInserted() with null g_current_build\n";
+				QTreeWidget::rowsInserted( parent, start, end );
+				return;
+			}
 			Build& list = *g_current_build;
 			if( dragDropMode() == QAbstractItemView::DragDropMode::InternalMove ){
 				// move to the end of list 1st, so that resulting 'start' index can be used correctly, when moving inside a list farther
@@ -1284,7 +1295,9 @@ void LoadBuildMenu(){
 			const auto buffer = StringStream( GameToolsPath_get(), "default_build_menu.xml" );
 
 			const bool success = build_commands_parse( buffer );
-			ASSERT_MESSAGE( success, "failed to parse default build commands: " << buffer );
+			if( !success ){
+				globalErrorStream() << "failed to parse default build commands: " << buffer << '\n';
+			}
 		}
 	}
 }
