@@ -113,7 +113,7 @@ jobs:
           - arch: arm64
             runner: macos-latest
           - arch: x86_64
-            runner: macos-13
+            runner: macos-12
 
     steps:
       - uses: actions/checkout@v4
@@ -142,8 +142,13 @@ jobs:
           export PATH="$QT5_DIR/bin:$PATH"
           export PKG_CONFIG_PATH="$QT5_DIR/lib/pkgconfig:$ASSIMP_DIR/lib/pkgconfig:$JPEG_DIR/lib/pkgconfig:$BREW/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CPPFLAGS="-I$QT5_DIR/include -I$ASSIMP_DIR/include -I$JPEG_DIR/include $CPPFLAGS"
-          # -F ist der macOS Framework-Suchpfad — ohne ihn findet ld Qt5 nicht beim Linken der Plugins
           export LDFLAGS="-L$QT5_DIR/lib -F$QT5_DIR/lib -L$ASSIMP_DIR/lib -L$JPEG_DIR/lib $LDFLAGS"
+          # Fix: pkg-config --libs-only-L/l verschluckt -framework Flags auf macOS.
+          # LIBS_QT* muss mit --libs überschrieben werden damit -framework QtWidgets etc. mitkommt.
+          export LIBS_QTCORE="$(pkg-config Qt5Core --libs)"
+          export LIBS_QTGUI="$(pkg-config Qt5Gui --libs)"
+          export LIBS_QTWIDGETS="$(pkg-config Qt5Widgets --libs)"
+          export LIBS_QTSVG="$(pkg-config Qt5Svg --libs)"
           # Fix: macOS hat kein <GL/gl.h>, nur <OpenGL/gl.h> — Symlink als Shim anlegen
           sudo mkdir -p /usr/local/include/GL
           sudo ln -sf "$(xcrun --show-sdk-path)/System/Library/Frameworks/OpenGL.framework/Headers/gl.h" /usr/local/include/GL/gl.h
