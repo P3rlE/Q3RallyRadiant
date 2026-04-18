@@ -290,10 +290,14 @@ ifneq "$(filter MINGW64_NT%,$(UNAME_S))" ""
 endif
 
 # VERSION!
-RADIANT_VERSION_NUMBER = 1.6.0
-RADIANT_VERSION = $(RADIANT_VERSION_NUMBER)n
-RADIANT_MAJOR_VERSION = 6
-RADIANT_MINOR_VERSION = 0
+# Q3Rally scheme:
+#   RADIANT_VERSION_NUMBER = <year>.<minor>-q3r   (example: 2026.1-q3r)
+#   RADIANT_MAJOR_VERSION  = <year>
+#   RADIANT_MINOR_VERSION  = <minor>
+RADIANT_VERSION_NUMBER ?= 2026.1-q3r
+RADIANT_VERSION ?= $(RADIANT_VERSION_NUMBER)
+RADIANT_MAJOR_VERSION ?= $(word 1,$(subst ., ,$(firstword $(subst -, ,$(RADIANT_VERSION_NUMBER)))))
+RADIANT_MINOR_VERSION ?= $(word 2,$(subst ., ,$(firstword $(subst -, ,$(RADIANT_VERSION_NUMBER)))))
 Q3MAP_VERSION = 2.5.17n
 
 # Executable extension
@@ -1423,12 +1427,12 @@ endif
 # release building... NOT for general users
 # these may use tools not in the list that is checked by the build system
 release-src: BUILD_DATE := $(shell date +%Y%m%d)
-release-src: INSTALLDIR := netradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
+release-src: INSTALLDIR := q3rallyradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
 release-src:
 	$(GIT) archive --format=tar --prefix=$(INSTALLDIR)/ HEAD | bzip2 > ../$(INSTALLDIR).tar.bz2
 
 release-win32: BUILD_DATE := $(shell date +%Y%m%d)
-release-win32: INSTALLDIR := netradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
+release-win32: INSTALLDIR := q3rallyradiant-$(RADIANT_VERSION_NUMBER)-$(BUILD_DATE)
 release-win32:
 	$(MAKE) all INSTALLDIR=$(INSTALLDIR) MAKEFILE_CONF=cross-Makefile.conf RADIANT_ABOUTMSG="Official release build" BUILD=release
 	7za a -sfx../../../../../../../../../../$(HOME)/7z.sfx ../$(INSTALLDIR)-win32-7z.exe $(INSTALLDIR)/

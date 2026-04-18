@@ -2,7 +2,9 @@
 set -e
 
 APPDIR="NetRadiant-Custom.AppDir"
-APPNAME="NetRadiant-Custom"
+APPNAME="Q3RallyRadiant"
+VERSION_NUMBER="${RADIANT_VERSION_NUMBER:-$(sed -n 's/^RADIANT_VERSION_NUMBER[[:space:]]*[?]?=[[:space:]]*//p' Makefile | head -n1)}"
+ARTIFACT_BASENAME="q3rallyradiant-${VERSION_NUMBER}"
 BINARY="radiant.x86_64"
 DESKTOP="netradiantcustom.desktop"
 ICON="$BINARY"
@@ -25,7 +27,7 @@ Exec=$BINARY %F
 Icon=$ICON
 Type=Application
 Categories=Game;Graphics;
-StartupWMClass=NetRadiant-Custom
+StartupWMClass=Q3RallyRadiant
 EOF
 
 install "$ICON_SRC"  "$ICON_DEST"
@@ -41,5 +43,9 @@ APPIMAGETOOL=./linuxdeploy-x86_64.AppImage
 echo "[5/5] Building AppImage..."
 "$APPIMAGETOOL" --desktop-file $APPDIR/*.desktop --icon-file=$ICON_DEST --deploy-deps-only $APPDIR/usr/bin/modules --deploy-deps-only $APPDIR/usr/bin/plugins --appdir=$APPDIR --plugin qt --output appimage
 
+if [ -f "${APPNAME}-x86_64.AppImage" ]; then
+	mv "${APPNAME}-x86_64.AppImage" "${ARTIFACT_BASENAME}-x86_64.AppImage"
+fi
+
 echo "Done!"
-echo "Built: ${APPNAME}-x86_64.AppImage"
+echo "Built: ${ARTIFACT_BASENAME}-x86_64.AppImage"
