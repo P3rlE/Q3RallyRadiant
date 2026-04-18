@@ -29,6 +29,7 @@
 
 #include "debugging/debugging.h"
 #include "version.h"
+#include "product.h"
 
 #include "ifilesystem.h"
 #include "ientity.h"
@@ -686,7 +687,7 @@ void Restart(){
 
 
 void OpenUpdateURL(){
-	OpenURL( "https://github.com/Garux/netradiant-custom/releases/latest" );
+	OpenURL( "https://github.com/Garux/netradiant-custom/releases/latest?product=" RADIANT_UPDATE_PRODUCT_PARAM "&version=" RADIANT_VERSION );
 #if 0
 	// build the URL
 	StringOutputStream URL( 256 );
@@ -698,6 +699,7 @@ void OpenUpdateURL(){
 #else
 	URL << "&OS_dlup=3";
 #endif
+	URL << "&Product_dlup=" RADIANT_UPDATE_PRODUCT_PARAM;
 	URL << "&Version_dlup=" RADIANT_VERSION;
 	g_GamesDialog.AddPacksURL( URL );
 	OpenURL( URL );
