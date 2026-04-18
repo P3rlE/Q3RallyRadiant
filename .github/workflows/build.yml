@@ -104,8 +104,16 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: macOS x86_64
-    runs-on: macos-latest
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-13
 
     steps:
       - uses: actions/checkout@v4
@@ -130,16 +138,19 @@ jobs:
           export PKG_CONFIG_PATH="$QT5_DIR/lib/pkgconfig:$ASSIMP_DIR/lib/pkgconfig:$JPEG_DIR/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CPPFLAGS="-I$QT5_DIR/include -I$ASSIMP_DIR/include -I$JPEG_DIR/include $CPPFLAGS"
           export LDFLAGS="-L$QT5_DIR/lib -L$ASSIMP_DIR/lib -L$JPEG_DIR/lib $LDFLAGS"
+          # Fix: macOS verwendet <OpenGL/gl.h> statt <GL/gl.h>
+          export CFLAGS="-DGL_SILENCE_DEPRECATION -include OpenGL/gl.h $CFLAGS"
+          export CXXFLAGS="-DGL_SILENCE_DEPRECATION -include OpenGL/gl.h $CXXFLAGS"
           make DEPENDENCIES_CHECK=off -j4
 
       - name: Package macOS build
         run: |
           mkdir -p dist
           if [ -d "install" ]; then
-            ditto -c -k --sequesterRsrc --keepParent install dist/netradiant-custom-macos-x86_64.zip
+            ditto -c -k --sequesterRsrc --keepParent install dist/netradiant-custom-macos-${{ matrix.arch }}.zip
           elif ls *.app >/dev/null 2>&1; then
             APP_NAME="$(ls -d *.app | head -n 1)"
-            ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" dist/netradiant-custom-macos-x86_64.zip
+            ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" dist/netradiant-custom-macos-${{ matrix.arch }}.zip
           else
             echo "Kein macOS-Ausgabeordner gefunden (weder install noch *.app)."
             exit 1
@@ -147,8 +158,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-x86_64
-          path: dist/netradiant-custom-macos-x86_64.zip
+          name: macos-${{ matrix.arch }}
+          path: dist/netradiant-custom-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   create-release:
