@@ -4,12 +4,16 @@
 : ${SH:=sh}
 : ${CP:=cp}
 : ${CP_R:=cp -r}
+: ${PACKFILTER:=}
 
 dest=$1
 
 case "$DOWNLOAD_GAMEPACKS" in
 	yes)
 		LICENSEFILTER=GPL BATCH=1 $SH download-gamepacks.sh
+		;;
+	q3rally)
+		PACKFILTER="${PACKFILTER:-Q3RallyPack}" BATCH=1 $SH download-gamepacks.sh
 		;;
 	allinone)
 		LICENSEFILTER=allinone BATCH=1 $SH download-gamepacks.sh
@@ -28,6 +32,17 @@ for GAME in games/*Pack; do
 		$ECHO "  ./download-gamepacks.sh"
 		$ECHO "and then try again!"
 	else
+		PACK=${GAME##*/}
+		case " $PACKFILTER " in
+			"  ")
+				;;
+			*" $PACK "*)
+				;;
+			*)
+				$ECHO "Skipping $PACK because it is not in PACKFILTER."
+				continue
+				;;
+		esac
 		$SH install-gamepack.sh "$GAME" "$dest"
 	fi
 done
