@@ -129,38 +129,41 @@ jobs:
         run: |
           echo "HOMEBREW_PREFIX=$(brew --prefix)" >> $GITHUB_ENV
           QT5_DIR="$(brew --prefix qt@5 2>/dev/null || true)"
-          if [ -z "$QT5_DIR" ] || [ ! -f "$QT5_DIR/lib/libQt5Core.dylib" ]; then
+          if [ -z "$QT5_DIR" ]; then
             QT5_DIR="$(brew --prefix qt 2>/dev/null || true)"
           fi
-          if [ -z "$QT5_DIR" ] || [ ! -f "$QT5_DIR/lib/libQt5Core.dylib" ]; then
-            QT5_CORE_LIB="$(find "$(brew --cellar qt@5 2>/dev/null || echo /nonexistent)" -name libQt5Core.dylib 2>/dev/null | head -n 1)"
+          if [ -z "$QT5_DIR" ]; then
+            echo "Qt prefix not found after brew install."
+            brew list --versions qt@5 || true
+            brew list --versions qt || true
+            exit 1
+          fi
+          QT5_CORE_LIB="$(find "$QT5_DIR/lib" \( -name 'libQt5Core*.dylib' -o -path '*/QtCore.framework/QtCore' \) 2>/dev/null | head -n 1)"
+          if [ -z "$QT5_CORE_LIB" ]; then
+            QT5_CORE_LIB="$(find "$(brew --cellar qt@5 2>/dev/null || echo /nonexistent)" \( -name 'libQt5Core*.dylib' -o -path '*/QtCore.framework/QtCore' \) 2>/dev/null | head -n 1)"
             if [ -n "$QT5_CORE_LIB" ]; then
-              QT5_DIR="$(cd "$(dirname "$QT5_CORE_LIB")/.." && pwd)"
+              QT5_DIR="$(echo "$QT5_CORE_LIB" | sed -E 's#(/lib/.*)$##')"
             fi
           fi
-          if [ -z "$QT5_DIR" ] || [ ! -f "$QT5_DIR/lib/libQt5Core.dylib" ]; then
+          if [ -z "$QT5_CORE_LIB" ]; then
             echo "Qt5 library not found after brew install."
+            ls -la "$QT5_DIR/lib" || true
             brew list --versions qt@5 || true
             brew list --versions qt || true
             exit 1
           fi
           echo "QT5_DIR=$QT5_DIR" >> $GITHUB_ENV
+          echo "QT5_CORE_LIB=$QT5_CORE_LIB" >> $GITHUB_ENV
           echo "ASSIMP_DIR=$(brew --prefix assimp)" >> $GITHUB_ENV
           echo "JPEG_DIR=$(brew --prefix jpeg-turbo)" >> $GITHUB_ENV
           echo "$QT5_DIR/bin" >> $GITHUB_PATH
 
       - name: Verify Qt5 architecture
         run: |
-          test -f "$QT5_DIR/lib/libQt5Core.dylib"
-          file "$QT5_DIR/lib/libQt5Core.dylib"
-          lipo -info "$QT5_DIR/lib/libQt5Core.dylib"
-          lipo -archs "$QT5_DIR/lib/libQt5Core.dylib" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
-
-      - name: Verify Qt5 architecture
-        run: |
-          file "$QT5_DIR/lib/libQt5Core.dylib"
-          lipo -info "$QT5_DIR/lib/libQt5Core.dylib"
-          lipo -archs "$QT5_DIR/lib/libQt5Core.dylib" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
+          test -f "$QT5_CORE_LIB"
+          file "$QT5_CORE_LIB"
+          lipo -info "$QT5_CORE_LIB"
+          lipo -archs "$QT5_CORE_LIB" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
 
       - name: Build
         run: |
