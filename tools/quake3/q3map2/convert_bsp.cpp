@@ -807,7 +807,12 @@ int MergeBSPMain( Args& args ){
 	}
 
 	{
-		entities.insert( entities.cend(), bsp.entities.cbegin() + 1, bsp.entities.cend() ); // minus world
+		// move entity payloads instead of copying:
+		// entity_t contains forward_list<parseMesh_t>, and parseMesh_t owns mesh_t
+		// with deleted copy-assignment semantics.
+		entities.insert( entities.cend(),
+		                 std::make_move_iterator( bsp.entities.begin() + 1 ),
+		                 std::make_move_iterator( bsp.entities.end() ) ); // minus world
 		numBSPEntities = entities.size();
 		bspModels.insert( bspModels.cend(), bsp.bspModels.cbegin() + 1, bsp.bspModels.cend() ); // minus world
 		bspShaders.insert( bspShaders.cend(), bsp.bspShaders.cbegin(), bsp.bspShaders.cend() );
