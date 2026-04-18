@@ -36,7 +36,6 @@ jobs:
             git
             unzip
             p7zip
-            subversion
           msystem: ${{ matrix.msystem }}
           path-type: minimal
           release: false
@@ -86,8 +85,7 @@ jobs:
             p7zip-full \
             unzip \
             wget \
-            git \
-            subversion
+            git
 
       - uses: actions/checkout@v4
         with:

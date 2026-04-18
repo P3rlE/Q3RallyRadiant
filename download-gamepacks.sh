@@ -55,6 +55,19 @@ pack()
 				$GIT archive --remote="$source" --prefix="$pack/" "$2":"$1" | tar xvf - || true
 				cd ..
 				;;
+			githubdir)
+				$RM_R zipdownload
+				$MKDIR zipdownload
+				cd zipdownload
+				$WGET -O repo.zip "$source" || true
+				$UNZIPPER repo.zip || true
+				cd ..
+				$RM_R "games/$pack"
+				$MKDIR "games/$pack"
+				subdir=$(find zipdownload -mindepth 1 -maxdepth 4 -type d -name "$2" | head -1)
+				[ -n "$subdir" ] && $MV "$subdir"/* "games/$pack/" || $MV zipdownload/*/* "games/$pack/" || true
+				$RM_R zipdownload
+				;;
 			git)
 				cd "games/$pack"
 				$GIT pull || true
@@ -135,6 +148,18 @@ pack()
 			$GIT archive --remote="$source" --prefix="$pack/" "$2":"$1" | tar xvf - || true
 			cd ..
 			;;
+		githubdir)
+			$RM_R zipdownload
+			$MKDIR zipdownload
+			cd zipdownload
+			$WGET -O repo.zip "$source" || true
+			$UNZIPPER repo.zip || true
+			cd ..
+			$MKDIR "games/$pack"
+			subdir=$(find zipdownload -mindepth 1 -maxdepth 4 -type d -name "$2" | head -1)
+			[ -n "$subdir" ] && $MV "$subdir"/* "games/$pack/" || $MV zipdownload/*/* "games/$pack/" || true
+			$RM_R zipdownload
+			;;
 		git)
 			cd games
 			$GIT clone "$source" "$pack" || true
@@ -168,7 +193,7 @@ pack NexuizPack        GPL         gitdir git://git.icculus.org/divverent/nexuiz
 pack OpenArenaPack     GPL         git    https://github.com/NeonKnightOA/oagamepack.git
 pack OsirionPack       GPL         zip1   http://ingar.intranifty.net/files/netradiant/gamepacks/OsirionPack.zip
 pack PreyPack          proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/PreyPack/trunk/
-pack Q3RallyPack       proprietary svn    https://svn.code.sf.net/p/q3rallysa/code/tools/radiant-config/radiant15-netradiant/
+pack Q3RallyPack       proprietary githubdir https://github.com/Q3Rally-Team/q3rally/archive/refs/heads/master.zip gamepacks
 pack Quake2Pack        proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/Q2Pack/branches/1.5/
 pack Quake3Pack        proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/Q3Pack/trunk/ -r29
 #pack Quake3Pack       proprietary git    https://gitlab.com/netradiant/gamepacks/quake3-mapeditor-support.git
