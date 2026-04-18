@@ -202,18 +202,31 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		shape_combo->addItem( "Valley",           (int)ShapeType::Valley );
 		shape_combo->addItem( "Tunnel",           (int)ShapeType::Tunnel );
 		shape_combo->addItem( "Slope Tunnel",     (int)ShapeType::SlopeTunnel );
+		shape_combo->addItem( "Banked Turn",      (int)ShapeType::BankedTurn );
+		shape_combo->addItem( "Berm",             (int)ShapeType::Berm );
+		shape_combo->addItem( "Jump Ramp",        (int)ShapeType::JumpRamp );
+		shape_combo->addItem( "Whoops",           (int)ShapeType::Whoops );
 		shape_combo->setCurrentIndex( 0 ); // Flat
 		form->addRow( "Base Shape:", shape_combo );
 
 		// Shape height — editable spinbox (manual mode or non-slope shapes).
 		// For Slope / Slope Tunnel in Use Selection mode, replaced by a
 		// read-only label derived from the selection brush's Z extent.
-		auto *shape_height_spin = new DoubleSpinBox( 0, 4096, 256, 2, 8 );
+		auto *shape_height_spin = new DoubleSpinBox( 0, 4096, 160, 2, 8 );
 		form->addRow( "Peak Height:", shape_height_spin );
 
 		// Tunnel height — only visible for Slope Tunnel
-		auto *tunnel_height_spin = new DoubleSpinBox( 0, 4096, 256, 2, 8 );
+		auto *tunnel_height_spin = new DoubleSpinBox( 0, 4096, 192, 2, 8 );
 		form->addRow( "Tunnel Height:", tunnel_height_spin );
+
+		auto *curve_radius_spin = new DoubleSpinBox( 64, 8192, 640, 2, 16 );
+		form->addRow( "Curve Radius:", curve_radius_spin );
+
+		auto *banking_angle_spin = new DoubleSpinBox( 0, 45, 12, 1, 1 );
+		form->addRow( "Bank Angle (°):", banking_angle_spin );
+
+		auto *ramp_length_spin = new DoubleSpinBox( 64, 8192, 512, 2, 16 );
+		form->addRow( "Ramp Length:", ramp_length_spin );
 
 		// Terrace step — hidden for Flat
 		auto *terrace_spin = new DoubleSpinBox( 0, 512, 0, 2, 8 );
@@ -227,7 +240,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		form->addRow( "Noise Type:", noise_combo );
 
 		// Variance / Frequency
-		auto *variance_spin  = new DoubleSpinBox( 0, 1024, 32, 2, 1 );
+		auto *variance_spin  = new DoubleSpinBox( 0, 1024, 16, 2, 1 );
 		form->addRow( "Variance:", variance_spin );
 		auto *frequency_spin = new DoubleSpinBox( 0.0001, 1.0, 0.005, 4, 0.001 );
 		form->addRow( "Frequency:", frequency_spin );
@@ -363,6 +376,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double variance     = variance_spin->value();
 			const double frequency    = frequency_spin->value();
 			const double terrace      = terrace_spin->value();
+			const double curve_radius = curve_radius_spin->value();
+			const double bank_angle   = banking_angle_spin->value();
+			const double ramp_length  = ramp_length_spin->value();
 			int seed = seed_spin->value();
 			if ( auto_seed_cb->isChecked() ) {
 				seed = make_auto_seed();
@@ -469,7 +485,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 			else {
 				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
-				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, noise, terrace, seed );
+				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency,
+				                                      noise, terrace, curve_radius, bank_angle, ramp_length, seed );
 				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally,
 				                      build_options, preview_mode ? &preview_entities : nullptr );
 			}
@@ -508,6 +525,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			"Valley Depth:",   // Valley
 			"Tunnel Height:",  // Tunnel
 			"Slope Height:",   // SlopeTunnel
+			"Turn Height:",    // BankedTurn
+			"Berm Height:",    // Berm
+			"Ramp Height:",    // JumpRamp
+			"Whoop Height:",   // Whoops
 		};
 
 		// Returns true when slope height should be derived from the selection
@@ -555,6 +576,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const ShapeType st         = (ShapeType)shape_combo->itemData( idx ).toInt();
 			const bool is_flat         = ( st == ShapeType::Flat );
 			const bool is_slope_tunnel = ( st == ShapeType::SlopeTunnel );
+			const bool is_banked_turn  = ( st == ShapeType::BankedTurn );
+			const bool uses_ramp_len   = ( st == ShapeType::JumpRamp || st == ShapeType::Whoops );
 
 			set_row_visible( shape_height_spin, !is_flat );
 			if ( !is_flat ) {
@@ -568,6 +591,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				}
 			}
 			set_row_visible( tunnel_height_spin, is_slope_tunnel );
+			set_row_visible( curve_radius_spin, is_banked_turn );
+			set_row_visible( banking_angle_spin, is_banked_turn );
+			set_row_visible( ramp_length_spin, uses_ramp_len );
 			// Terrace not applicable to flat tunnels (no slope to step),
 			// but valid for slope tunnels where the floor descends along Y
 			set_row_visible( terrace_spin, !is_flat && st != ShapeType::Tunnel );
@@ -590,6 +616,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( step_y_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( shape_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( tunnel_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( curve_radius_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( banking_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( ramp_length_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( terrace_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( variance_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( frequency_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
