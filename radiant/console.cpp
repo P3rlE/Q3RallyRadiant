@@ -29,6 +29,7 @@
 
 #include "version.h"
 #include "aboutmsg.h"
+#include "product.h"
 #include "mainframe.h"
 
 #include <QPlainTextEdit>
@@ -64,7 +65,7 @@ void Sys_LogFile( bool enable ){
 			time_t localtime;
 			time( &localtime );
 			globalOutputStream() << "Today is: " << ctime( &localtime )
-			                     << "This is NetRadiant '" RADIANT_VERSION "' compiled " __DATE__ "\n" RADIANT_ABOUTMSG "\n";
+			                     << "This is " RADIANT_PRODUCT_NAME " '" RADIANT_VERSION "' compiled " __DATE__ "\n" RADIANT_ABOUTMSG "\n";
 		}
 		else{
 			qt_MessageBox( 0, "Failed to create log file, check write permissions in Radiant directory.\n",
