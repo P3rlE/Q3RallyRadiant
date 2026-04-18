@@ -83,7 +83,7 @@ For release builds, the Makefile now enforces a Q3Rally-only gamepack flow:
 
 - `DOWNLOAD_GAMEPACKS=q3rally` fetches only `Q3RallyPack` (instead of all-in-one/multi-pack).
 - `PACKFILTER=Q3RallyPack` is forwarded into install scripts to avoid copying unrelated local packs.
-- `make release-win32` runs `release-validate-gamepacks` and fails if any directory other than `Q3RallyPack` exists in `install/.../gamepacks/games/`.
+- `make release-win32` runs `release-validate-gamepacks` and fails if anything other than `Q3RallyPack` is present in `install/.../gamepacks/games/` (including stray `.game` entries).
 
 You can also run the validation manually for a custom install dir:
 

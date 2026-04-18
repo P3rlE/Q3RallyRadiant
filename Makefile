@@ -1464,6 +1464,21 @@ release-validate-gamepacks:
 		$(ECHO) "$$other"; \
 		exit 1; \
 	fi; \
+	gamefiles="$$(find "$$dir" -mindepth 1 -maxdepth 1 -type f -name '*.game' -printf '%f\n' | sort)"; \
+	otherfiles="$$(printf '%s\n' "$$gamefiles" | sed "s/\\.game$$//" | sed "/^$$allowed$$/d" | sed '/^$$/d')"; \
+	if [ -n "$$otherfiles" ]; then \
+		$(ECHO) "ERROR: unexpected gamepack .game files found in $$dir:"; \
+		$(ECHO) "$$otherfiles"; \
+		exit 1; \
+	fi; \
+	rootdir="$(INSTALLDIR)/gamepacks"; \
+	rootgames="$$(find "$$rootdir" -mindepth 1 -maxdepth 1 -type d -name '*.game' -printf '%f\n' | sort)"; \
+	rootother="$$(printf '%s\n' "$$rootgames" | sed "s/\\.game$$//" | sed "/^$$allowed$$/d" | sed '/^$$/d')"; \
+	if [ -n "$$rootother" ]; then \
+		$(ECHO) "ERROR: unexpected gamepack directories found in $$rootdir:"; \
+		$(ECHO) "$$rootother"; \
+		exit 1; \
+	fi; \
 	$(ECHO) "Release gamepack validation OK: $$allowed only."
 
 # load dependency files
