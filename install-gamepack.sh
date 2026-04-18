@@ -27,6 +27,9 @@ case $pack in
 	*/SmokinGunsPack|*/UnvanquishedPack)
 		pack="$pack/build/netradiant"
 	;;
+	*/Q3RallyPack)
+		pack="$pack/tools/gamepacks"
+	;;
 	*/WoPPack)
 		pack="$pack/netradiant"
 	;;

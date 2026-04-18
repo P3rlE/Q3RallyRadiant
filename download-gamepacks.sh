@@ -193,7 +193,11 @@ pack NexuizPack        GPL         gitdir git://git.icculus.org/divverent/nexuiz
 pack OpenArenaPack     GPL         git    https://github.com/NeonKnightOA/oagamepack.git
 pack OsirionPack       GPL         zip1   http://ingar.intranifty.net/files/netradiant/gamepacks/OsirionPack.zip
 pack PreyPack          proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/PreyPack/trunk/
+<<<<<<< HEAD
 pack Q3RallyPack       proprietary githubdir https://github.com/Q3Rally-Team/q3rally/archive/refs/heads/master.zip gamepacks
+=======
+pack Q3RallyPack       proprietary git    https://github.com/Q3Rally-Team/q3rally.git
+>>>>>>> 18d533adf43d6b6fa527bc5a20d131cade480a77
 pack Quake2Pack        proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/Q2Pack/branches/1.5/
 pack Quake3Pack        proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/Q3Pack/trunk/ -r29
 #pack Quake3Pack       proprietary git    https://gitlab.com/netradiant/gamepacks/quake3-mapeditor-support.git
