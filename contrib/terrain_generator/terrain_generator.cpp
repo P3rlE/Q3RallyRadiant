@@ -392,7 +392,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const QString current = GlobalRadiant().TextureBrowser_getSelectedShader();
 			if ( current != last_polled_shader ) {
 				last_polled_shader = current;
-				texture_edit->setText( current );
+				// Route to whichever field triggered the Pick, or base texture.
+				QLineEdit* target_edit = active_mat_edit ? active_mat_edit : texture_edit;
+				target_edit->setText( current );
+				active_mat_edit = nullptr;
 				if ( close_browser_on_pick ) {
 					close_browser_on_pick = false;
 					GlobalRadiant().TextureBrowser_close();
@@ -407,14 +410,33 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		} );
 		form->addRow( "Base Material:", tex_widget );
 
-		auto *steep_material_edit = new QLineEdit;
-		auto *peak_material_edit  = new QLineEdit;
-		auto *dirt_material_edit  = new QLineEdit;
-		auto *track_material_edit = new QLineEdit;
-		form->addRow( "Steep Material:", steep_material_edit );
-		form->addRow( "Peak Material:",  peak_material_edit );
-		form->addRow( "Dirt Material:",  dirt_material_edit );
-		form->addRow( "Track Material:", track_material_edit );
+		// Pointer to whichever material field's Pick button was last pressed.
+		// The pick_timer uses this to route the selected shader to the right field.
+		QLineEdit* active_mat_edit = nullptr;
+
+		// Helper: build a [QLineEdit | Pick] row and wire the Pick button.
+		auto make_mat_row = [&]( const QString& label ) -> QLineEdit* {
+			auto *w    = new QWidget;
+			auto *hbox = new QHBoxLayout( w );
+			hbox->setContentsMargins( 0, 0, 0, 0 );
+			auto *edit = new QLineEdit;
+			auto *btn  = new QPushButton( "Pick" );
+			btn->setFixedWidth( 48 );
+			hbox->addWidget( edit );
+			hbox->addWidget( btn );
+			QObject::connect( btn, &QPushButton::clicked, [&, edit](){
+				active_mat_edit = edit;
+				close_browser_on_pick = !GlobalRadiant().TextureBrowser_isShown();
+				GlobalRadiant().TextureBrowser_show();
+			} );
+			form->addRow( label, w );
+			return edit;
+		};
+
+		auto *steep_material_edit = make_mat_row( "Steep Material:" );
+		auto *peak_material_edit  = make_mat_row( "Peak Material:" );
+		auto *dirt_material_edit  = make_mat_row( "Dirt Material:" );
+		auto *track_material_edit = make_mat_row( "Track Material:" );
 
 		auto *steep_angle_spin = new DoubleSpinBox( 0.0, 89.0, 45.0, 1, 1 );
 		auto *peak_min_spin    = new DoubleSpinBox( 0.0, 100.0, 85.0, 1, 1 );
@@ -662,16 +684,29 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			return true;
 		};
 
+		bool generating = false;
 		auto rerender_preview_if_active = [&](){
-			if ( preview_active ) {
+			if ( preview_active && !generating ) {
+				generating = true;
 				do_generate( true );
+				generating = false;
 			}
 		};
 
-		QObject::connect( preview_btn,  &QPushButton::clicked, [&](){ do_generate( true ); } );
+		QObject::connect( preview_btn,  &QPushButton::clicked, [&](){
+			if ( !generating ) {
+				generating = true;
+				do_generate( true );
+				generating = false;
+			}
+		} );
 		QObject::connect( generate_btn, &QPushButton::clicked, [&](){
-			clear_preview();
-			do_generate( false );
+			if ( !generating ) {
+				generating = true;
+				clear_preview();
+				do_generate( false );
+				generating = false;
+			}
 		} );
 		QObject::connect( close_btn,    &QPushButton::clicked, [&](){
 			clear_preview();
