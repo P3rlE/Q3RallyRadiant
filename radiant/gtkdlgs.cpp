@@ -39,6 +39,7 @@
 #include "debugging/debugging.h"
 #include "version.h"
 #include "aboutmsg.h"
+#include "product.h"
 
 #include "igl.h"
 #include "iscenegraph.h"
@@ -330,7 +331,7 @@ void DoSides( EBrushPrefab type ){
 
 void DoAbout(){
 	QDialog dialog( MainFrame_getWindow(), Qt::Dialog | Qt::WindowCloseButtonHint );
-	dialog.setWindowTitle( "About Q3RallyRadiant" );
+	dialog.setWindowTitle( "About " RADIANT_PRODUCT_NAME );
 
 	{
 		auto *vbox = new QVBoxLayout( &dialog );
@@ -347,10 +348,10 @@ void DoAbout(){
 			}
 
 			{
-				auto *label = new QLabel( "Q3RallyRadiant " RADIANT_VERSION "\n"
+				auto *label = new QLabel( RADIANT_PRODUCT_NAME " " RADIANT_VERSION "\n"
 				                         __DATE__ "\n\n"
+				                         "Built on and distributed with " RADIANT_UPSTREAM_CREDIT "\n"
 				                         RADIANT_ABOUTMSG "\n\n"
-				                         "Based on NetRadiant Custom\n\n"
 				                         "This program is free software\n"
 				                         "licensed under the GNU GPL.\n"
 				                       );

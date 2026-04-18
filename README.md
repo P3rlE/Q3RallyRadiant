@@ -77,6 +77,20 @@ make install/radiant.x86_64 \
      -j$(nproc)
 ```
 
+### Release packaging (Q3Rally-only gamepack)
+
+For release builds, the Makefile now enforces a Q3Rally-only gamepack flow:
+
+- `DOWNLOAD_GAMEPACKS=q3rally` fetches only `Q3RallyPack` (instead of all-in-one/multi-pack).
+- `PACKFILTER=Q3RallyPack` is forwarded into install scripts to avoid copying unrelated local packs.
+- `make release-win32` runs `release-validate-gamepacks` and fails if anything other than `Q3RallyPack` is present in `install/.../gamepacks/games/` (including stray `.game` entries).
+
+You can also run the validation manually for a custom install dir:
+
+```bash
+make release-validate-gamepacks INSTALLDIR=<your-install-dir> PACKFILTER=Q3RallyPack
+```
+
 ---
 
 ## Staying in sync with upstream
@@ -90,6 +104,26 @@ git merge upstream/master
 ```
 
 Conflicts are expected in `radiant/gtkdlgs.cpp`, `radiant/mainframe.cpp` and `radiant/main.cpp` (branding) and `plugins/vfspk3/vfs.cpp` (GCC 13 fix). Everything under `contrib/botviz/` is Q3Rally-only and will never conflict.
+
+---
+
+## Parallel installation with NetRadiant (no settings conflicts)
+
+Q3RallyRadiant now stores user config in a dedicated folder with product suffix:
+
+- **new path schema:** `Q3RallyRadiant-1.<major>.<minor>/`
+- **legacy schema (shared with NetRadiant):** `1.<major>.<minor>/`
+
+This keeps Q3RallyRadiant and NetRadiant side-by-side without overwriting each other's preferences.
+
+On first start, if Q3RallyRadiant finds an existing legacy settings folder and no new Q3RallyRadiant folder yet, it offers a one-time import. Imported data is copied; afterwards both editors keep separate configuration trees.
+
+Installer version marker files are also product-specific now:
+
+- `Q3RALLY_RADIANT_MAJOR`
+- `Q3RALLY_RADIANT_MINOR`
+
+If those files don't match the running binary version, startup is blocked with an explicit Q3RallyRadiant mismatch message.
 
 ---
 

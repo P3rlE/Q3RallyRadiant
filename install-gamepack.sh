@@ -8,6 +8,7 @@ set -ex
 
 : ${CP:=cp}
 : ${CP_R:=cp -r}
+: ${PACKFILTER:=}
 
 pack=$1
 dest=$2
@@ -33,11 +34,31 @@ esac
 
 for GAMEFILE in "$pack/games"/*.game; do
 	if [ x"$GAMEFILE" != x"$pack/games/*.game" ]; then
+		GAME=$(basename "$GAMEFILE" .game)
+		case " $PACKFILTER " in
+			"  ")
+				;;
+			*" $GAME "*)
+				;;
+			*)
+				continue
+				;;
+		esac
 		$CP "$GAMEFILE" "$dest/games/"
 	fi
 done
 for GAMEDIR in "$pack"/*.game; do
 	if [ x"$GAMEDIR" != x"$pack/*.game" ]; then
+		GAME=$(basename "$GAMEDIR" .game)
+		case " $PACKFILTER " in
+			"  ")
+				;;
+			*" $GAME "*)
+				;;
+			*)
+				continue
+				;;
+		esac
 		$CP_R "$GAMEDIR" "$dest/"
 	fi
 done

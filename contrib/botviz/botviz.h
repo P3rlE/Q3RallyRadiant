@@ -66,6 +66,26 @@ struct RoutePoint {
 	bool    isCollision;
 };
 
+// ── Aggregated route segment buckets (nodeIndex -> next nodeIndex) ──────────
+
+struct RouteBucketStats {
+	int   fromNode = 0;
+	int   toNode = 0;
+	int   sampleCount = 0;
+	float avgSpeed = 0.f;
+	float collisionRate = 0.f;
+	float avgRouteDeviation = 0.f;
+	Vector3 fromPos;
+	Vector3 toPos;
+	bool    hasFromPos = false;
+	bool    hasToPos = false;
+};
+
+enum class BotVizRenderMode {
+	Route = 0,
+	Heatmap = 1
+};
+
 // ── Main state object ─────────────────────────────────────────────────────────
 
 class BotViz {
@@ -79,14 +99,21 @@ public:
 	int   frameCount()    const { return (int)m_frames.size(); }
 	bool  hasPositions()  const { return m_hasPositions; }
 	float duration()      const;
+	float startTime()     const;
+	float endTime()       const;
 	const std::string&  filePath()  const { return m_filePath; }
 	const BotFrame*     frame( int i ) const;
+	int frameIndexForTime( float t ) const;
+	const RoutePoint* point( int i ) const;
 
 	// Node stats — keyed by bot_path_node order value
 	const NodeStats* nodeStats( int order ) const;
 	bool             hasNodeStats() const { return !m_nodeStats.empty(); }
+	const std::vector<RouteBucketStats>& routeBuckets() const { return m_routeBuckets; }
 
 	void resolvePositions( const std::map<int,Vector3>& nodePositions );
+	bool exportBucketsCsv( const char* path ) const;
+	bool exportBucketsJson( const char* path ) const;
 
 	void renderWireframe() const;
 	void renderSolid()     const;
@@ -94,16 +121,20 @@ public:
 	int  playhead       = 0;
 	bool showRoute      = true;
 	bool showCollisions = true;
+	BotVizRenderMode renderMode = BotVizRenderMode::Route;
 
 private:
 	BotViz() = default;
 
 	void speedToColor( float speed, float& r, float& g, float& b ) const;
+	void heatToColor( float heat, float& r, float& g, float& b ) const;
 	void buildNodeStats();
+	void buildRouteBuckets( const std::map<int,Vector3>& nodePositions );
 
 	std::vector<BotFrame>            m_frames;
 	std::vector<RoutePoint>          m_points;
 	std::map<int,NodeStats>          m_nodeStats;   // key = node order
+	std::vector<RouteBucketStats>    m_routeBuckets;
 	std::string                      m_filePath;
 	float                            m_maxSpeed     = 1.f;
 	bool                             m_resolved     = false;

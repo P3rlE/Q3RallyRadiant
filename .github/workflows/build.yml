@@ -1,21 +1,20 @@
 name: build
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch
+
+permissions:
+  contents: write
 
 jobs:
   windows-msys:
-    name: ${{ matrix.config }} Windows ${{ matrix.arch }}
+    name: Windows ${{ matrix.arch }}
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64]
-        cc: [gcc]
         include:
-          # - arch: x86
-          #   msystem: MINGW32
-          #   prefix: mingw-w64-i686
-
           - arch: x86_64
             msystem: MINGW64
             prefix: mingw-w64-x86_64
@@ -25,33 +24,41 @@ jobs:
         shell: msys2 {0}
 
     steps:
-    - uses: msys2/setup-msys2@v2
-      with:
-        install: base-devel ${{ matrix.prefix }}-toolchain ${{ matrix.prefix }}-qt5-base ${{ matrix.prefix }}-qt5-svg ${{ matrix.prefix }}-assimp ${{ matrix.prefix }}-libxml2 git unzip p7zip
-        msystem: ${{ matrix.msystem }}
-        path-type: minimal
-        release: false
-        update: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          install: >-
+            base-devel
+            ${{ matrix.prefix }}-toolchain
+            ${{ matrix.prefix }}-qt5-base
+            ${{ matrix.prefix }}-qt5-svg
+            ${{ matrix.prefix }}-assimp
+            ${{ matrix.prefix }}-libxml2
+            git
+            unzip
+            p7zip
+          msystem: ${{ matrix.msystem }}
+          path-type: minimal
+          release: false
+          update: false
 
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Build
-      run: |
-        make MAKEFILE_CONF=msys2-Makefile.conf -j4
-        mkdir -p install/settings
-        7z a Windows-${{ matrix.arch }}.zip ./install/*
-#       zip immediately, since .bla files and empty folders get lost somewhere later otherwise
+      - name: Build
+        run: |
+          make MAKEFILE_CONF=msys2-Makefile.conf -j4
+          mkdir -p install/settings
+          7z a netradiant-custom-windows-${{ matrix.arch }}.zip ./install/*
 
-    - uses: actions/upload-artifact@v4
-      with:
-        name: Windows-${{ matrix.arch }}
-        path: Windows-${{ matrix.arch }}.zip
-        if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: netradiant-custom-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
 
   linux:
-    name: ${{ matrix.config }} Linux ${{ matrix.arch }}
+    name: Linux ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -59,54 +66,85 @@ jobs:
         arch: [x86_64]
 
     steps:
-    - name: Install tools
-      run: |
+      - name: Install tools
+        run: |
           sudo apt-get -qq update
-          sudo apt-get -y install mesa-common-dev qtbase5-dev libqt5svg5-dev libglib2.0-dev libjpeg-dev libpng-dev libassimp-dev
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
+          sudo apt-get -y install \
+            mesa-common-dev \
+            libgl-dev \
+            libglx-dev \
+            libx11-dev \
+            qtbase5-dev \
+            libqt5svg5-dev \
+            libglib2.0-dev \
+            libjpeg8-dev \
+            libpng-dev \
+            libxml2-dev \
+            libassimp-dev \
+            zlib1g-dev \
+            p7zip-full \
+            unzip \
+            wget \
+            git
 
-    - name: Build
-      run: |
-        make CC=gcc-14 CXX=g++-14 CXXFLAGS="-Wno-deprecated-copy" -j4
-        ./appimage.sh
-        7z a Linux-${{ matrix.arch }}.7z ./NetRadiant-Custom-x86_64.AppImage
-#        7z a Linux-${{ matrix.arch }}.7z ./install/*
-#       7z to preserve file permissions
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - uses: actions/upload-artifact@v4
-      with:
-        name: Linux-${{ matrix.arch }}
-        path: Linux-${{ matrix.arch }}.7z
-        if-no-files-found: error
+      - name: Build
+        run: |
+          set -euxo pipefail
+          make CC=gcc-14 CXX=g++-14 CXXFLAGS="-Wno-deprecated-copy" -j4
+          chmod +x ./appimage.sh
+          ./appimage.sh || { echo "AppImage generation failed"; exit 1; }
 
-  create-testing:
-    if: github.ref == 'refs/heads/master' && ( github.event_name == 'push' || github.event_name == 'workflow_dispatch' )
+          VERSION_NUMBER="$(sed -n 's/^RADIANT_VERSION_NUMBER[[:space:]]*[?]?=[[:space:]]*//p' Makefile | head -n1)"
+          APPIMAGE_PATH="./q3rallyradiant-${VERSION_NUMBER}-x86_64.AppImage"
+
+          if [ ! -f "${APPIMAGE_PATH}" ]; then
+            echo "Error: AppImage file was not created at ${APPIMAGE_PATH}"
+            echo "Current directory contents:"
+            ls -la
+            echo "Known AppImage candidates:"
+            find . -maxdepth 1 -type f -name '*.AppImage' -print || true
+            exit 1
+          fi
+
+          7z a netradiant-custom-linux-${{ matrix.arch }}.7z "${APPIMAGE_PATH}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: netradiant-custom-linux-${{ matrix.arch }}.7z
+          if-no-files-found: error
+
+  create-release:
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    name: Create dated release
     needs: [windows-msys, linux]
     runs-on: ubuntu-latest
+
     steps:
-      - name: Download Artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
 
-      - name: Create binary archives
-        shell: bash
+      - name: Prepare release metadata
         run: |
-          mv Windows-x86_64/Windows-x86_64.zip netradiant-custom-$(date +%Y%m%d)-windows-x86_64.zip
-          mv Linux-x86_64/Linux-x86_64.7z netradiant-custom-$(date +%Y%m%d)-linux-x86_64.7z
-#         note: 7z dir/* doesn't match .bla (hidden) file in linux under dir/ but matches in subfolders  # or doesn't match there now too?
+          echo "RELEASE_TAG=build-$(date +'%Y%m%d')-${{ github.run_number }}" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=Build $(date +'%Y-%m-%d') #${{ github.run_number }}" >> $GITHUB_ENV
 
-      - name: Get current date
+      - name: Collect release files
         run: |
-          echo "MY_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          mkdir -p release-files
+          find . -type f \( -name "*.zip" -o -name "*.7z" \) -exec cp {} release-files/ \;
+          ls -la release-files
 
-      - name: Create latest build
-        uses: Garux/action-automatic-releases@master
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          automatic_release_tag: ${{ env.MY_DATE }}
-          prerelease: false
-          title: Latest Build
-          files: |
-            *.zip
-            *.7z
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release-files/* \
+            --repo "${{ github.repository }}" \
+            --title "$RELEASE_TITLE" \
+            --notes "Automated build from workflow run ${{ github.run_number }} on $(date +'%Y-%m-%d')."

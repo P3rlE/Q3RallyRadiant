@@ -105,9 +105,15 @@ LIBS_ZLIB          ?= -lz
 CPPFLAGS_JPEG      ?=
 LIBS_JPEG          ?= -ljpeg
 DEPEND_ON_MAKEFILE ?= yes
+<<<<<<< HEAD
 # yes = download; all = even download undistributable gamepacks; no = disable; allinone = dl all-in-one compact fixed archive; q3rally = Q3RallyPack only
 DOWNLOAD_GAMEPACKS ?= q3rally
 PACKFILTER         ?= Q3RallyPack
+=======
+# yes = download; all = even download undistributable gamepacks; no = disable; allinone = dl all-in-one compact fixed archive
+DOWNLOAD_GAMEPACKS ?= allinone
+PACKFILTER         ?=
+>>>>>>> df3838c8d9e4c719eae196acd15e0cfc1cd22272
 INSTALL_DLLS       ?= yes
 INSTALL_DATA       ?= yes
 

@@ -29,6 +29,7 @@
 
 #include "debugging/debugging.h"
 #include "version.h"
+#include "product.h"
 
 #include "ifilesystem.h"
 #include "ientity.h"
@@ -57,6 +58,8 @@
 #include <QDialogButtonBox>
 #include <QPushButton>
 #include <QPainter>
+#include <QTreeWidget>
+#include <QHeaderView>
 
 #include "commandlib.h"
 #include "scenelib.h"
@@ -118,6 +121,13 @@
 #include "colors.h"
 #include "tools.h"
 #include "filterbar.h"
+
+#include <map>
+#include <vector>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <algorithm>
 
 
 // VFS
@@ -677,7 +687,7 @@ void Restart(){
 
 
 void OpenUpdateURL(){
-	OpenURL( "https://github.com/Garux/netradiant-custom/releases/latest" );
+	OpenURL( "https://github.com/Garux/netradiant-custom/releases/latest?product=" RADIANT_UPDATE_PRODUCT_PARAM "&version=" RADIANT_VERSION );
 #if 0
 	// build the URL
 	StringOutputStream URL( 256 );
@@ -689,6 +699,7 @@ void OpenUpdateURL(){
 #else
 	URL << "&OS_dlup=3";
 #endif
+	URL << "&Product_dlup=" RADIANT_UPDATE_PRODUCT_PARAM;
 	URL << "&Version_dlup=" RADIANT_VERSION;
 	g_GamesDialog.AddPacksURL( URL );
 	OpenURL( URL );
@@ -1167,6 +1178,263 @@ void create_grid_menu( QMenuBar *menubar ){
 	Grid_constructMenu( menu );
 }
 
+enum class RallyPreflightSeverity
+{
+	Error,
+	Warning,
+};
+
+struct RallyEntityInfo
+{
+	Entity* entity{};
+	CopiedString classname;
+	int order{};
+	bool hasOrder{};
+	bool orderIsValid{};
+	Vector3 origin{ 0, 0, 0 };
+	bool hasOrigin{};
+	bool originIsValid{};
+};
+
+struct RallyPreflightIssue
+{
+	RallyPreflightSeverity severity;
+	QString message;
+	QString entityInfo;
+};
+
+class RallyEntityCollector : public scene::Graph::Walker
+{
+	std::vector<RallyEntityInfo>& m_entities;
+public:
+	RallyEntityCollector( std::vector<RallyEntityInfo>& entities ) : m_entities( entities ){
+	}
+
+	bool pre( const scene::Path& path, scene::Instance& instance ) const override {
+		(void)instance;
+		Entity* ent = Node_getEntity( path.top() );
+		if ( !ent ) {
+			return true;
+		}
+		const char* classname = ent->getClassName();
+		if ( !string_equal( classname, "rally_startfinish" )
+		  && !string_equal( classname, "rally_checkpoint" )
+		  && !string_equal( classname, "bot_path_node" ) ) {
+			return true;
+		}
+
+		RallyEntityInfo info;
+		info.entity = ent;
+		info.classname = classname;
+
+		const char* orderStr = ent->getKeyValue( "order" );
+		info.hasOrder = orderStr && orderStr[0] != '\0';
+		if ( info.hasOrder ) {
+			char* end = nullptr;
+			const long parsed = std::strtol( orderStr, &end, 10 );
+			info.orderIsValid = end != orderStr && end && *end == '\0';
+			info.order = static_cast<int>( parsed );
+		}
+
+		const char* originStr = ent->getKeyValue( "origin" );
+		info.hasOrigin = originStr && originStr[0] != '\0';
+		if ( info.hasOrigin ) {
+			float x = 0, y = 0, z = 0;
+			char trailing = '\0';
+			info.originIsValid = std::sscanf( originStr, "%f %f %f %c", &x, &y, &z, &trailing ) == 3;
+			if ( info.originIsValid ) {
+				info.origin = Vector3( x, y, z );
+			}
+		}
+
+		m_entities.push_back( info );
+		return true;
+	}
+};
+
+QString RallyEntity_describe( const RallyEntityInfo& info ){
+	class KeyValueCollector : public Entity::Visitor
+	{
+	public:
+		QStringList pairs;
+		void visit( const char* key, const char* value ) override {
+			pairs << QString( "%1=%2" ).arg( key ).arg( value );
+		}
+	};
+
+	KeyValueCollector keys;
+	info.entity->forEachKeyValue( keys );
+	return QString( "%1 | %2" ).arg( info.classname.c_str(), keys.pairs.join( ", " ) );
+}
+
+void RallyPreflight_addIssue( std::vector<RallyPreflightIssue>& issues, RallyPreflightSeverity severity, const QString& message, const RallyEntityInfo* info = nullptr ){
+	RallyPreflightIssue issue{ severity, message, info ? RallyEntity_describe( *info ) : QString( "(global)" ) };
+	issues.push_back( issue );
+}
+
+void RallyPreflight_validateOrder( const std::vector<RallyEntityInfo>& entities, const char* classname, std::vector<RallyPreflightIssue>& issues ){
+	std::map<int, std::vector<const RallyEntityInfo*>> byOrder;
+	int minOrder = 0;
+	int maxOrder = 0;
+	bool hasAnyValidOrder = false;
+
+	for ( const RallyEntityInfo& info : entities ) {
+		if ( !string_equal( info.classname.c_str(), classname ) ) {
+			continue;
+		}
+		if ( !info.hasOrder ) {
+			RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, QString( "%1: fehlender order Key." ).arg( classname ), &info );
+			continue;
+		}
+		if ( !info.orderIsValid ) {
+			RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, QString( "%1: order ist keine gültige Ganzzahl." ).arg( classname ), &info );
+			continue;
+		}
+
+		byOrder[info.order].push_back( &info );
+		if ( !hasAnyValidOrder ) {
+			minOrder = maxOrder = info.order;
+			hasAnyValidOrder = true;
+		}
+		else{
+			minOrder = std::min( minOrder, info.order );
+			maxOrder = std::max( maxOrder, info.order );
+		}
+	}
+
+	for ( const auto& [order, sameOrderEntities] : byOrder ) {
+		if ( sameOrderEntities.size() > 1 ) {
+			for ( const RallyEntityInfo* info : sameOrderEntities ) {
+				RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, QString( "%1: doppelter order %2." ).arg( classname ).arg( order ), info );
+			}
+		}
+	}
+
+	if ( !hasAnyValidOrder ) {
+		return;
+	}
+
+	std::vector<int> missing;
+	for ( int order = minOrder; order <= maxOrder; ++order ) {
+		if ( byOrder.find( order ) == byOrder.end() ) {
+			missing.push_back( order );
+		}
+	}
+
+	if ( !missing.empty() ) {
+		QStringList missingOrders;
+		for ( int order : missing ) {
+			missingOrders << QString::number( order );
+		}
+		RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, QString( "%1: order-Lücke(n): %2." ).arg( classname, missingOrders.join( ", " ) ) );
+	}
+}
+
+void Q3RallyPreflight(){
+	std::vector<RallyEntityInfo> entities;
+	entities.reserve( 128 );
+	RallyEntityCollector collector( entities );
+	GlobalSceneGraph().traverse( collector );
+
+	int startFinishCount = 0;
+	int checkpointCount = 0;
+	int botNodeCount = 0;
+
+	for ( const RallyEntityInfo& info : entities ) {
+		startFinishCount += string_equal( info.classname.c_str(), "rally_startfinish" );
+		checkpointCount += string_equal( info.classname.c_str(), "rally_checkpoint" );
+		botNodeCount += string_equal( info.classname.c_str(), "bot_path_node" );
+	}
+
+	std::vector<RallyPreflightIssue> issues;
+
+	if ( startFinishCount == 0 ) {
+		RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, "Pflicht-Entity fehlt: rally_startfinish." );
+	}
+	if ( checkpointCount == 0 ) {
+		RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, "Pflicht-Entity fehlt: rally_checkpoint." );
+	}
+	if ( botNodeCount == 0 ) {
+		RallyPreflight_addIssue( issues, RallyPreflightSeverity::Error, "Pflicht-Entity fehlt: bot_path_node." );
+	}
+
+	RallyPreflight_validateOrder( entities, "rally_checkpoint", issues );
+	RallyPreflight_validateOrder( entities, "bot_path_node", issues );
+
+	for ( const RallyEntityInfo& info : entities ) {
+		if ( !info.hasOrigin ) {
+			RallyPreflight_addIssue( issues, RallyPreflightSeverity::Warning, "Origin fehlt.", &info );
+			continue;
+		}
+		if ( !info.originIsValid ) {
+			RallyPreflight_addIssue( issues, RallyPreflightSeverity::Warning, "Origin ist kein gültiger xyz-Tripel.", &info );
+			continue;
+		}
+		if ( !std::isfinite( info.origin[0] ) || !std::isfinite( info.origin[1] ) || !std::isfinite( info.origin[2] ) ) {
+			RallyPreflight_addIssue( issues, RallyPreflightSeverity::Warning, "Origin enthält ungültige Zahlenwerte.", &info );
+			continue;
+		}
+		constexpr float mapBoundsLimit = 131072.f;
+		if ( std::fabs( info.origin[0] ) > mapBoundsLimit || std::fabs( info.origin[1] ) > mapBoundsLimit || std::fabs( info.origin[2] ) > mapBoundsLimit ) {
+			RallyPreflight_addIssue( issues, RallyPreflightSeverity::Warning, "Origin liegt weit außerhalb typischer Q3-Map-Grenzen.", &info );
+		}
+	}
+
+	int errorCount = 0;
+	int warningCount = 0;
+	for ( const RallyPreflightIssue& issue : issues ) {
+		errorCount += issue.severity == RallyPreflightSeverity::Error;
+		warningCount += issue.severity == RallyPreflightSeverity::Warning;
+	}
+
+	QDialog dialog( MainFrame_getWindow() );
+	dialog.setWindowTitle( "Q3Rally Preflight" );
+	dialog.setMinimumSize( 1000, 500 );
+
+	auto* vbox = new QVBoxLayout( &dialog );
+	vbox->addWidget( new QLabel( QString( "Entities geprüft: %1 (startfinish=%2, checkpoint=%3, bot_path_node=%4)" )
+	                                 .arg( entities.size() )
+	                                 .arg( startFinishCount )
+	                                 .arg( checkpointCount )
+	                                 .arg( botNodeCount ) ) );
+	vbox->addWidget( new QLabel( QString( "Ergebnis: %1 Fehler, %2 Warnungen." ).arg( errorCount ).arg( warningCount ) ) );
+
+	auto* tree = new QTreeWidget;
+	tree->setAlternatingRowColors( true );
+	tree->setRootIsDecorated( false );
+	tree->setWordWrap( true );
+	tree->setColumnCount( 3 );
+	tree->setHeaderLabels( { "Typ", "Meldung", "Entity-Infos (Classname + Keywerte)" } );
+	tree->header()->setSectionResizeMode( 0, QHeaderView::ResizeToContents );
+	tree->header()->setSectionResizeMode( 1, QHeaderView::ResizeToContents );
+	tree->header()->setSectionResizeMode( 2, QHeaderView::Stretch );
+
+	for ( const RallyPreflightIssue& issue : issues ) {
+		const bool isError = issue.severity == RallyPreflightSeverity::Error;
+		auto* item = new QTreeWidgetItem( tree );
+		item->setText( 0, isError ? "Fehler" : "Warnung" );
+		item->setText( 1, issue.message );
+		item->setText( 2, issue.entityInfo );
+		item->setForeground( 0, QBrush( isError ? QColor( "#bb2222" ) : QColor( "#996600" ) ) );
+	}
+
+	if ( issues.empty() ) {
+		auto* item = new QTreeWidgetItem( tree );
+		item->setText( 0, "OK" );
+		item->setText( 1, "Keine Probleme gefunden." );
+		item->setText( 2, "-" );
+		item->setForeground( 0, QBrush( QColor( "#1f7a1f" ) ) );
+	}
+
+	vbox->addWidget( tree );
+
+	auto *buttons = new QDialogButtonBox( QDialogButtonBox::Close );
+	QObject::connect( buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject );
+	vbox->addWidget( buttons );
+
+	dialog.exec();
+}
+
 void create_misc_menu( QMenuBar *menubar ){
 	// Misc menu
 	QMenu *menu = menubar->addMenu( "M&isc" );
@@ -1179,6 +1447,7 @@ void create_misc_menu( QMenuBar *menubar ){
 
 	create_menu_item_with_mnemonic( menu, "Find brush...", "FindBrush" );
 	create_menu_item_with_mnemonic( menu, "Map Info...", "MapInfo" );
+	create_menu_item_with_mnemonic( menu, "Q3Rally Preflight", "Q3RallyPreflight" );
 	create_menu_item_with_mnemonic( menu, "&Refresh models", "RefreshReferences" );
 	create_menu_item_with_mnemonic( menu, "Set 2D &Background image...", makeCallbackF( WXY_SetBackgroundImage ) );
 	create_menu_item_with_mnemonic( menu, "Fullscreen", "Fullscreen" );
@@ -2101,6 +2370,7 @@ void MainFrame_Construct(){
 
 	GlobalCommands_insert( "BuildMenuCustomize", makeCallbackF( DoBuildMenu ) );
 	GlobalCommands_insert( "Build_runRecentExecutedBuild", makeCallbackF( Build_runRecentExecutedBuild ), QKeySequence( "F5" ) );
+	GlobalCommands_insert( "Q3RallyPreflight", makeCallbackF( Q3RallyPreflight ) );
 
 	GlobalCommands_insert( "OpenGLFont", makeCallbackF( OpenGLFont_select ) );
 
@@ -2170,4 +2440,3 @@ void MainFrame_Destroy(){
 	g_patchCount.setCountChangedCallback( Callback<void()>() );
 	g_brushCount.setCountChangedCallback( Callback<void()>() );
 }
-

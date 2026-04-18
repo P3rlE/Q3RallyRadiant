@@ -831,6 +831,13 @@ public:
 
 struct parseMesh_t
 {
+
+	parseMesh_t() = default;
+	parseMesh_t( parseMesh_t&& ) = default;
+	parseMesh_t& operator=( parseMesh_t&& ) = default;
+	parseMesh_t( const parseMesh_t& ) = delete;
+	parseMesh_t& operator=( const parseMesh_t& ) = delete;
+
 	int entityNum, brushNum;                    /* ydnar: editor numbering */
 
 	/* ydnar: for shadowcasting entities */
