@@ -6,6 +6,7 @@
 #include <numbers>
 #include <random>
 #include <cstdint>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,6 +91,171 @@ void adjust_bounds_to_fit_grid( BrushData& target, double step_x, double step_y 
 	}
 }
 
+static int clamp_iteration_count( int requested, std::size_t cell_count ){
+	if ( requested <= 0 ) {
+		return 0;
+	}
+	int max_iter = 6;
+	if ( cell_count <= 4096 ) {
+		max_iter = 24;
+	}
+	else if ( cell_count <= 16384 ) {
+		max_iter = 16;
+	}
+	else if ( cell_count <= 65536 ) {
+		max_iter = 10;
+	}
+	return std::min( requested, max_iter );
+}
+
+static std::size_t grid_index( int ix, int iy, int width ){
+	return static_cast<std::size_t>( iy ) * static_cast<std::size_t>( width ) + static_cast<std::size_t>( ix );
+}
+
+static void quantize_terraces( std::vector<double>& values, double terrace_step ){
+	if ( terrace_step <= 0.0 ) {
+		return;
+	}
+	for ( double& v : values ) {
+		v = std::floor( v / terrace_step ) * terrace_step;
+	}
+}
+
+static bool same_terrace_band( double a, double b, double terrace_step ){
+	if ( terrace_step <= 0.0 ) {
+		return true;
+	}
+	const double ia = std::floor( a / terrace_step );
+	const double ib = std::floor( b / terrace_step );
+	return ia == ib;
+}
+
+static double laplacian_pass( std::vector<double>& values, int width, int height, double terrace_step ){
+	std::vector<double> next = values;
+	double max_delta = 0.0;
+	for ( int iy = 0; iy < height; ++iy ) {
+		for ( int ix = 0; ix < width; ++ix ) {
+			const std::size_t idx = grid_index( ix, iy, width );
+			const double center = values[idx];
+			double sum = center;
+			int count = 1;
+			const int offsets[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+			for ( const auto& off : offsets ) {
+				const int nx = ix + off[0];
+				const int ny = iy + off[1];
+				if ( nx < 0 || nx >= width || ny < 0 || ny >= height ) {
+					continue;
+				}
+				const double neighbor = values[grid_index( nx, ny, width )];
+				if ( same_terrace_band( center, neighbor, terrace_step ) ) {
+					sum += neighbor;
+					++count;
+				}
+			}
+			const double blended = center * 0.6 + ( sum / static_cast<double>( count ) ) * 0.4;
+			next[idx] = blended;
+			max_delta = std::max( max_delta, std::abs( blended - center ) );
+		}
+	}
+	values.swap( next );
+	quantize_terraces( values, terrace_step );
+	return max_delta;
+}
+
+static double thermal_pass( std::vector<double>& values, int width, int height, double terrace_step ){
+	std::vector<double> delta( values.size(), 0.0 );
+	double max_transfer = 0.0;
+	for ( int iy = 0; iy < height; ++iy ) {
+		for ( int ix = 0; ix < width; ++ix ) {
+			const std::size_t idx = grid_index( ix, iy, width );
+			const double center = values[idx];
+			const int offsets[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+			for ( const auto& off : offsets ) {
+				const int nx = ix + off[0];
+				const int ny = iy + off[1];
+				if ( nx < 0 || nx >= width || ny < 0 || ny >= height ) {
+					continue;
+				}
+				const std::size_t nidx = grid_index( nx, ny, width );
+				if ( idx >= nidx ) {
+					continue;
+				}
+				const double neighbor = values[nidx];
+				if ( !same_terrace_band( center, neighbor, terrace_step ) ) {
+					continue;
+				}
+				const double diff = center - neighbor;
+				const double threshold = 3.0;
+				if ( std::abs( diff ) <= threshold ) {
+					continue;
+				}
+				const double moved = std::min( std::abs( diff ) - threshold, 2.0 ) * 0.2;
+				if ( diff > 0.0 ) {
+					delta[idx] -= moved;
+					delta[nidx] += moved;
+				}
+				else {
+					delta[idx] += moved;
+					delta[nidx] -= moved;
+				}
+				max_transfer = std::max( max_transfer, moved );
+			}
+		}
+	}
+	for ( std::size_t i = 0; i < values.size(); ++i ) {
+		values[i] += delta[i];
+	}
+	quantize_terraces( values, terrace_step );
+	return max_transfer;
+}
+
+static double hydraulic_pass( std::vector<double>& values, int width, int height, double terrace_step, TerrainRng& rng ){
+	std::vector<double> delta( values.size(), 0.0 );
+	double max_transfer = 0.0;
+	for ( int iy = 1; iy < height - 1; ++iy ) {
+		for ( int ix = 1; ix < width - 1; ++ix ) {
+			const std::size_t idx = grid_index( ix, iy, width );
+			const double center = values[idx];
+			int best_x = ix;
+			int best_y = iy;
+			double best_drop = 0.0;
+			for ( int oy = -1; oy <= 1; ++oy ) {
+				for ( int ox = -1; ox <= 1; ++ox ) {
+					if ( ox == 0 && oy == 0 ) {
+						continue;
+					}
+					const int nx = ix + ox;
+					const int ny = iy + oy;
+					const double neighbor = values[grid_index( nx, ny, width )];
+					if ( !same_terrace_band( center, neighbor, terrace_step ) ) {
+						continue;
+					}
+					const double drop = center - neighbor;
+					if ( drop > best_drop ) {
+						best_drop = drop;
+						best_x = nx;
+						best_y = ny;
+					}
+				}
+			}
+			if ( best_drop <= 0.5 ) {
+				continue;
+			}
+			const std::size_t nidx = grid_index( best_x, best_y, width );
+			const double jitter = 0.75 + rng.random_double() * 0.5;
+			const double moved = std::min( best_drop * 0.08, 1.2 ) * jitter;
+			delta[idx] -= moved;
+			delta[nidx] += moved;
+			max_transfer = std::max( max_transfer, moved );
+		}
+	}
+	for ( std::size_t i = 0; i < values.size(); ++i ) {
+		values[i] += delta[i];
+	}
+	quantize_terraces( values, terrace_step );
+	return max_transfer;
+}
+
 // ---------------------------------------------------------------------------
 // Standard heightmap
 // ---------------------------------------------------------------------------
@@ -101,9 +267,14 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
                                 NoiseType noise_type, double terrace_step,
                                 double curve_radius, double banking_angle_deg,
                                 double ramp_length,
+                                const PostProcessSettings& post_process,
                                 int seed ){
 	HeightMap height_map;
 	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
+	const int width = static_cast<int>( std::round( target.width_x / step_x ) ) + 1;
+	const int height = static_cast<int>( std::round( target.length_y / step_y ) ) + 1;
+	std::vector<double> grid;
+	grid.reserve( static_cast<std::size_t>( width ) * static_cast<std::size_t>( height ) );
 
 	double seed_x = rng.random_double() * 10000.0;
 	double seed_y = rng.random_double() * 10000.0;
@@ -203,10 +374,42 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 			}
 
 			double final_z = target.max_z + base_z + noise_z;
-			if ( shape_type != ShapeType::Flat && terrace_step > 0.0 )
+			if ( shape_type != ShapeType::Flat && terrace_step > 0.0 ) {
 				final_z = std::floor( final_z / terrace_step ) * terrace_step;
+			}
+			grid.push_back( final_z );
+		}
+	}
 
-			height_map[{ round2( x ), round2( y ) }] = std::round( final_z );
+	if ( !grid.empty() ) {
+		const std::size_t cell_count = grid.size();
+		const int lap_iters = clamp_iteration_count( post_process.laplacian_iterations, cell_count );
+		for ( int i = 0; i < lap_iters; ++i ) {
+			if ( laplacian_pass( grid, width, height, terrace_step ) < 0.05 ) {
+				break;
+			}
+		}
+
+		const int thermal_iters = clamp_iteration_count( post_process.thermal_iterations, cell_count );
+		for ( int i = 0; i < thermal_iters; ++i ) {
+			if ( thermal_pass( grid, width, height, terrace_step ) < 0.02 ) {
+				break;
+			}
+		}
+
+		TerrainRng hydraulic_rng( mix_seed( static_cast<std::uint32_t>( seed ), 0x68796472U ) );
+		const int hydraulic_iters = clamp_iteration_count( post_process.hydraulic_iterations, cell_count );
+		for ( int i = 0; i < hydraulic_iters; ++i ) {
+			if ( hydraulic_pass( grid, width, height, terrace_step, hydraulic_rng ) < 0.02 ) {
+				break;
+			}
+		}
+	}
+
+	std::size_t index = 0;
+	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
+		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			height_map[{ round2( x ), round2( y ) }] = std::round( grid[index++] );
 		}
 	}
 

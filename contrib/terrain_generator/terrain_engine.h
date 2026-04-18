@@ -41,6 +41,13 @@ enum class NoiseType {
 	Random  = 2
 };
 
+struct PostProcessSettings
+{
+	int laplacian_iterations = 0;
+	int thermal_iterations = 0;
+	int hydraulic_iterations = 0;
+};
+
 BrushData make_manual_brush_data( double width, double length, double height );
 
 void adjust_bounds_to_fit_grid( BrushData& target, double step_x, double step_y );
@@ -52,6 +59,7 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
                                 NoiseType noise_type, double terrace_step,
                                 double curve_radius, double banking_angle_deg,
                                 double ramp_length,
+                                const PostProcessSettings& post_process,
                                 int seed );
 
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
