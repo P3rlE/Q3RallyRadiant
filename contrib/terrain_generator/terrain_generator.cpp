@@ -57,6 +57,13 @@ enum class MaskPreset {
 	ImageImport = 4
 };
 
+enum class PostProcessPreset {
+	Custom = 0,
+	Subtle = 1,
+	Medium = 2,
+	Aggressive = 3
+};
+
 static int make_auto_seed(){
 	std::random_device rd;
 	return static_cast<int>( rd() );
@@ -309,6 +316,21 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		auto *frequency_spin = new DoubleSpinBox( 0.0001, 1.0, 0.005, 4, 0.001 );
 		form->addRow( "Frequency:", frequency_spin );
 
+		auto *post_process_combo = new ComboBox;
+		post_process_combo->addItem( "Custom", (int)PostProcessPreset::Custom );
+		post_process_combo->addItem( "Subtle", (int)PostProcessPreset::Subtle );
+		post_process_combo->addItem( "Medium", (int)PostProcessPreset::Medium );
+		post_process_combo->addItem( "Aggressive", (int)PostProcessPreset::Aggressive );
+		post_process_combo->setCurrentIndex( 1 );
+		form->addRow( "Post-process Preset:", post_process_combo );
+
+		auto *laplacian_spin = new SpinBox( 0, 64, 1, 0, 1 );
+		auto *thermal_spin = new SpinBox( 0, 64, 2, 0, 1 );
+		auto *hydraulic_spin = new SpinBox( 0, 64, 1, 0, 1 );
+		form->addRow( "Laplacian Iterations:", laplacian_spin );
+		form->addRow( "Thermal Iterations:", thermal_spin );
+		form->addRow( "Hydraulic Iterations:", hydraulic_spin );
+
 		auto *mask_preset_combo = new ComboBox;
 		mask_preset_combo->addItem( "None",                  (int)MaskPreset::None );
 		mask_preset_combo->addItem( "Radial Mask",           (int)MaskPreset::Radial );
@@ -458,6 +480,11 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double tun_height = tunnel_height_spin->value();
 			const double variance     = variance_spin->value();
 			const double frequency    = frequency_spin->value();
+			const PostProcessSettings post_process{
+				laplacian_spin->value(),
+				thermal_spin->value(),
+				hydraulic_spin->value()
+			};
 			const MaskPreset mask_preset = (MaskPreset)mask_preset_combo->currentData().toInt();
 			const double terrace      = terrace_spin->value();
 			const double curve_radius = curve_radius_spin->value();
@@ -582,7 +609,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			else {
 				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
 				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, mask_map,
-				                                      noise, terrace, curve_radius, bank_angle, ramp_length, seed );
+				                                      noise, terrace, curve_radius, bank_angle, ramp_length, post_process, seed );
 				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally,
 				                      build_options, preview_mode ? &preview_entities : nullptr );
 			}
@@ -700,6 +727,50 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			set_row_visible( mask_image_widget, preset == MaskPreset::ImageImport );
 		};
 
+		auto apply_post_process_preset = [&](){
+			const PostProcessPreset preset = (PostProcessPreset)post_process_combo->currentData().toInt();
+			switch ( preset ) {
+			case PostProcessPreset::Subtle:
+				laplacian_spin->setValue( 1 );
+				thermal_spin->setValue( 2 );
+				hydraulic_spin->setValue( 1 );
+				break;
+			case PostProcessPreset::Medium:
+				laplacian_spin->setValue( 2 );
+				thermal_spin->setValue( 4 );
+				hydraulic_spin->setValue( 3 );
+				break;
+			case PostProcessPreset::Aggressive:
+				laplacian_spin->setValue( 4 );
+				thermal_spin->setValue( 8 );
+				hydraulic_spin->setValue( 6 );
+				break;
+			default:
+				break;
+			}
+		};
+
+		auto sync_post_process_preset = [&](){
+			const int lap = laplacian_spin->value();
+			const int thr = thermal_spin->value();
+			const int hyd = hydraulic_spin->value();
+			PostProcessPreset matched = PostProcessPreset::Custom;
+			if ( lap == 1 && thr == 2 && hyd == 1 ) {
+				matched = PostProcessPreset::Subtle;
+			}
+			else if ( lap == 2 && thr == 4 && hyd == 3 ) {
+				matched = PostProcessPreset::Medium;
+			}
+			else if ( lap == 4 && thr == 8 && hyd == 6 ) {
+				matched = PostProcessPreset::Aggressive;
+			}
+
+			const int idx = post_process_combo->findData( (int)matched );
+			if ( idx >= 0 && post_process_combo->currentIndex() != idx ) {
+				post_process_combo->setCurrentIndex( idx );
+			}
+		};
+
 		// Wire signals
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_target_mode );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   update_advanced );
@@ -709,6 +780,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( noise_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( post_process_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){
+			apply_post_process_preset();
+			rerender_preview_if_active();
+		} );
 		QObject::connect( use_ref_cb,   &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( auto_seed_cb, &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( manual_w_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
@@ -722,6 +797,18 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( banking_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( ramp_length_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( terrace_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( laplacian_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){
+			sync_post_process_preset();
+			rerender_preview_if_active();
+		} );
+		QObject::connect( thermal_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){
+			sync_post_process_preset();
+			rerender_preview_if_active();
+		} );
+		QObject::connect( hydraulic_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){
+			sync_post_process_preset();
+			rerender_preview_if_active();
+		} );
 		QObject::connect( variance_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( frequency_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( mask_preset_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
@@ -746,6 +833,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		update_advanced( false );
 		update_shape( shape_combo->currentIndex() );
 		update_mask_controls( mask_preset_combo->currentIndex() );
+		apply_post_process_preset();
 
 		// show() instead of exec() so the dialog is non-modal — the texture
 		// browser panel (and all other Radiant windows) remain interactive
