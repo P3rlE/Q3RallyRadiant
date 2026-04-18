@@ -156,6 +156,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define idx64 1
 #define ARCH_STRING "x86_64"
 #define Q3_LITTLE_ENDIAN
+#elif defined __arm64__ || defined __aarch64__
+#undef idx64
+#define idx64 1
+#define ARCH_STRING "arm64"
+#define Q3_LITTLE_ENDIAN
 #endif
 
 #define DLL_EXT ".dylib"
