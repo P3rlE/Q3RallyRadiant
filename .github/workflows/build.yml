@@ -128,10 +128,33 @@ jobs:
       - name: Set up build environment
         run: |
           echo "HOMEBREW_PREFIX=$(brew --prefix)" >> $GITHUB_ENV
-          echo "QT5_DIR=$(brew --prefix qt@5)" >> $GITHUB_ENV
+          QT5_DIR="$(brew --prefix qt@5 2>/dev/null || true)"
+          if [ -z "$QT5_DIR" ] || [ ! -f "$QT5_DIR/lib/libQt5Core.dylib" ]; then
+            QT5_DIR="$(brew --prefix qt 2>/dev/null || true)"
+          fi
+          if [ -z "$QT5_DIR" ] || [ ! -f "$QT5_DIR/lib/libQt5Core.dylib" ]; then
+            QT5_CORE_LIB="$(find "$(brew --cellar qt@5 2>/dev/null || echo /nonexistent)" -name libQt5Core.dylib 2>/dev/null | head -n 1)"
+            if [ -n "$QT5_CORE_LIB" ]; then
+              QT5_DIR="$(cd "$(dirname "$QT5_CORE_LIB")/.." && pwd)"
+            fi
+          fi
+          if [ -z "$QT5_DIR" ] || [ ! -f "$QT5_DIR/lib/libQt5Core.dylib" ]; then
+            echo "Qt5 library not found after brew install."
+            brew list --versions qt@5 || true
+            brew list --versions qt || true
+            exit 1
+          fi
+          echo "QT5_DIR=$QT5_DIR" >> $GITHUB_ENV
           echo "ASSIMP_DIR=$(brew --prefix assimp)" >> $GITHUB_ENV
           echo "JPEG_DIR=$(brew --prefix jpeg-turbo)" >> $GITHUB_ENV
-          echo "$(brew --prefix qt@5)/bin" >> $GITHUB_PATH
+          echo "$QT5_DIR/bin" >> $GITHUB_PATH
+
+      - name: Verify Qt5 architecture
+        run: |
+          test -f "$QT5_DIR/lib/libQt5Core.dylib"
+          file "$QT5_DIR/lib/libQt5Core.dylib"
+          lipo -info "$QT5_DIR/lib/libQt5Core.dylib"
+          lipo -archs "$QT5_DIR/lib/libQt5Core.dylib" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
 
       - name: Verify Qt5 architecture
         run: |
