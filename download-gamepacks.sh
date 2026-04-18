@@ -56,17 +56,15 @@ pack()
 				cd ..
 				;;
 			githubdir)
-				$RM_R zipdownload
-				$MKDIR zipdownload
-				cd zipdownload
-				$WGET -O repo.zip "$source" || true
-				$UNZIPPER repo.zip || true
-				cd ..
 				$RM_R "games/$pack"
-				$MKDIR "games/$pack"
-				subdir=$(find zipdownload -mindepth 1 -maxdepth 4 -type d -name "$2" | head -1)
-				[ -n "$subdir" ] && $MV "$subdir"/* "games/$pack/" || $MV zipdownload/*/* "games/$pack/" || true
-				$RM_R zipdownload
+				cd games
+				$GIT clone --filter=blob:none --no-checkout "$source" "$pack" || true
+				cd "$pack"
+				$GIT sparse-checkout set "$2" || true
+				$GIT checkout || true
+				cp -r "$2"/. . 2>/dev/null || true
+				$RM_R "$2" 2>/dev/null || true
+				cd ../..
 				;;
 			git)
 				cd "games/$pack"
@@ -149,16 +147,14 @@ pack()
 			cd ..
 			;;
 		githubdir)
-			$RM_R zipdownload
-			$MKDIR zipdownload
-			cd zipdownload
-			$WGET -O repo.zip "$source" || true
-			$UNZIPPER repo.zip || true
-			cd ..
-			$MKDIR "games/$pack"
-			subdir=$(find zipdownload -mindepth 1 -maxdepth 4 -type d -name "$2" | head -1)
-			[ -n "$subdir" ] && $MV "$subdir"/* "games/$pack/" || $MV zipdownload/*/* "games/$pack/" || true
-			$RM_R zipdownload
+			cd games
+			$GIT clone --filter=blob:none --no-checkout "$source" "$pack" || true
+			cd "$pack"
+			$GIT sparse-checkout set "$2" || true
+			$GIT checkout || true
+			cp -r "$2"/. . 2>/dev/null || true
+			$RM_R "$2" 2>/dev/null || true
+			cd ../..
 			;;
 		git)
 			cd games
@@ -193,11 +189,7 @@ pack NexuizPack        GPL         gitdir git://git.icculus.org/divverent/nexuiz
 pack OpenArenaPack     GPL         git    https://github.com/NeonKnightOA/oagamepack.git
 pack OsirionPack       GPL         zip1   http://ingar.intranifty.net/files/netradiant/gamepacks/OsirionPack.zip
 pack PreyPack          proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/PreyPack/trunk/
-<<<<<<< HEAD
-pack Q3RallyPack       proprietary githubdir https://github.com/Q3Rally-Team/q3rally/archive/refs/heads/master.zip gamepacks
-=======
-pack Q3RallyPack       proprietary git    https://github.com/Q3Rally-Team/q3rally.git
->>>>>>> 18d533adf43d6b6fa527bc5a20d131cade480a77
+pack Q3RallyPack       proprietary githubdir https://github.com/Q3Rally-Team/q3rally.git tools/gamepacks
 pack Quake2Pack        proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/Q2Pack/branches/1.5/
 pack Quake3Pack        proprietary svn    svn://svn.icculus.org/gtkradiant-gamepacks/Q3Pack/trunk/ -r29
 #pack Quake3Pack       proprietary git    https://gitlab.com/netradiant/gamepacks/quake3-mapeditor-support.git

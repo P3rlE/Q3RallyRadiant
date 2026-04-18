@@ -105,7 +105,6 @@ LIBS_ZLIB          ?= -lz
 CPPFLAGS_JPEG      ?=
 LIBS_JPEG          ?= -ljpeg
 DEPEND_ON_MAKEFILE ?= yes
-
 # yes = download; all = even download undistributable gamepacks; no = disable; allinone = dl all-in-one compact fixed archive; q3rally = Q3RallyPack only (via git)
 DOWNLOAD_GAMEPACKS ?= q3rally
 PACKFILTER         ?= Q3RallyPack
@@ -117,7 +116,6 @@ ifneq ($(DEPENDENCIES_CHECK),)
 override DEPENDENCIES_CHECK := $(patsubst yes,quiet,$(patsubst no,off,$(DEPENDENCIES_CHECK)))
 else
 DEPENDENCIES_CHECK ?= quiet
-
 # or: off, verbose
 endif
 
