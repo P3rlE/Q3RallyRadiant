@@ -103,84 +103,10 @@ jobs:
           path: netradiant-custom-linux-${{ matrix.arch }}.7z
           if-no-files-found: error
 
-  macos:
-    name: macOS ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-latest
-          - arch: x86_64
-            runner: macos-13
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install tools
-        run: |
-          brew update
-          brew install qt@5 assimp jpeg-turbo p7zip pkg-config
-
-      - name: Set up build environment
-        run: |
-          BREW=$(brew --prefix)
-          QT5_DIR="$(brew --prefix qt@5)"
-          ASSIMP_DIR="$(brew --prefix assimp)"
-          JPEG_DIR="$(brew --prefix jpeg-turbo)"
-          echo "QT5_DIR=$QT5_DIR" >> $GITHUB_ENV
-          echo "ASSIMP_DIR=$ASSIMP_DIR" >> $GITHUB_ENV
-          echo "JPEG_DIR=$JPEG_DIR" >> $GITHUB_ENV
-          echo "BREW=$BREW" >> $GITHUB_ENV
-          echo "$QT5_DIR/bin" >> $GITHUB_PATH
-
-      - name: Build
-        run: |
-          export PATH="$QT5_DIR/bin:$PATH"
-          export PKG_CONFIG_PATH="$QT5_DIR/lib/pkgconfig:$ASSIMP_DIR/lib/pkgconfig:$JPEG_DIR/lib/pkgconfig:$BREW/lib/pkgconfig:$PKG_CONFIG_PATH"
-          export CPPFLAGS="-I$QT5_DIR/include -I$ASSIMP_DIR/include -I$JPEG_DIR/include $CPPFLAGS"
-          export LDFLAGS="-L$QT5_DIR/lib -F$QT5_DIR/lib -L$ASSIMP_DIR/lib -L$JPEG_DIR/lib $LDFLAGS"
-          # Fix: pkg-config --libs-only-L/l verschluckt -framework Flags auf macOS.
-          # LIBS_QT* muss mit --libs überschrieben werden damit -framework QtWidgets etc. mitkommt.
-          export LIBS_QTCORE="$(pkg-config Qt5Core --libs)"
-          export LIBS_QTGUI="$(pkg-config Qt5Gui --libs)"
-          export LIBS_QTWIDGETS="$(pkg-config Qt5Widgets --libs)"
-          export LIBS_QTSVG="$(pkg-config Qt5Svg --libs)"
-          # Fix: macOS hat kein libGL — stattdessen OpenGL.framework verwenden
-          export LIBS_GL="-framework OpenGL"
-          # Fix: macOS hat kein <GL/gl.h>, nur <OpenGL/gl.h> — Symlink als Shim anlegen
-          sudo mkdir -p /usr/local/include/GL
-          sudo ln -sf "$(xcrun --show-sdk-path)/System/Library/Frameworks/OpenGL.framework/Headers/gl.h" /usr/local/include/GL/gl.h
-          export CFLAGS="-DGL_SILENCE_DEPRECATION $CFLAGS"
-          export CXXFLAGS="-DGL_SILENCE_DEPRECATION $CXXFLAGS"
-          make DEPENDENCIES_CHECK=off -j4
-
-      - name: Package macOS build
-        run: |
-          mkdir -p dist
-          if [ -d "install" ]; then
-            ditto -c -k --sequesterRsrc --keepParent install dist/netradiant-custom-macos-${{ matrix.arch }}.zip
-          elif ls *.app >/dev/null 2>&1; then
-            APP_NAME="$(ls -d *.app | head -n 1)"
-            ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" dist/netradiant-custom-macos-${{ matrix.arch }}.zip
-          else
-            echo "Kein macOS-Ausgabeordner gefunden (weder install noch *.app)."
-            exit 1
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ matrix.arch }}
-          path: dist/netradiant-custom-macos-${{ matrix.arch }}.zip
-          if-no-files-found: error
-
   create-release:
     if: github.ref == 'refs/heads/master' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     name: Create dated release
-    needs: [windows-msys, linux, macos]
+    needs: [windows-msys, linux]
     runs-on: ubuntu-latest
 
     steps:
