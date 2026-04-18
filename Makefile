@@ -363,7 +363,7 @@ dependencies-check:
 	checkbinary pkg-config "$(PKGCONFIG)"; \
 	checkbinary unzip "$(UNZIPPER)"; \
 	checkbinary git-core "$(GIT)"; \
-	[ "$(DOWNLOAD_GAMEPACKS)" = "yes" ] || [ "$(DOWNLOAD_GAMEPACKS)" = "all" ] && checkbinary subversion "$(SVN)"; \
+	[ "$(DOWNLOAD_GAMEPACKS)" = "yes" ] || [ "$(DOWNLOAD_GAMEPACKS)" = "all" ] || [ "$(DOWNLOAD_GAMEPACKS)" = "q3rally" ] && checkbinary subversion "$(SVN)"; \
 	checkbinary wget "$(WGET)"; \
 	[ "$(OS)" = "Win32" ] && checkbinary mingw32 "$(WINDRES)"; \
 	[ -n "$(LDD)" ] && checkbinary libc6 "$(LDD)"; \
