@@ -93,9 +93,24 @@ jobs:
 
       - name: Build
         run: |
+          set -euxo pipefail
           make CC=gcc-14 CXX=g++-14 CXXFLAGS="-Wno-deprecated-copy" -j4
-          ./appimage.sh
-          7z a netradiant-custom-linux-${{ matrix.arch }}.7z ./NetRadiant-Custom-x86_64.AppImage
+          chmod +x ./appimage.sh
+          ./appimage.sh || { echo "AppImage generation failed"; exit 1; }
+
+          VERSION_NUMBER="$(sed -n 's/^RADIANT_VERSION_NUMBER[[:space:]]*[?]?=[[:space:]]*//p' Makefile | head -n1)"
+          APPIMAGE_PATH="./q3rallyradiant-${VERSION_NUMBER}-x86_64.AppImage"
+
+          if [ ! -f "${APPIMAGE_PATH}" ]; then
+            echo "Error: AppImage file was not created at ${APPIMAGE_PATH}"
+            echo "Current directory contents:"
+            ls -la
+            echo "Known AppImage candidates:"
+            find . -maxdepth 1 -type f -name '*.AppImage' -print || true
+            exit 1
+          fi
+
+          7z a netradiant-custom-linux-${{ matrix.arch }}.7z "${APPIMAGE_PATH}"
 
       - uses: actions/upload-artifact@v4
         with:
