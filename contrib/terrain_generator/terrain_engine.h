@@ -43,9 +43,11 @@ void adjust_bounds_to_fit_grid( BrushData& target, double step_x, double step_y 
 HeightMap generate_height_map( const BrushData& target, double step_x, double step_y,
                                 ShapeType shape_type, double shape_height,
                                 double variance, double frequency,
-                                NoiseType noise_type, double terrace_step );
+                                NoiseType noise_type, double terrace_step,
+                                int seed );
 
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
                                         double cave_height, double slope_height,
                                         double variance, double frequency,
-                                        NoiseType noise_type, double terrace_step );
+                                        NoiseType noise_type, double terrace_step,
+                                        int seed );

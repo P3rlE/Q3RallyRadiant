@@ -20,6 +20,9 @@
 #include "gtkutil/spinbox.h"
 #include "gtkutil/combobox.h"
 
+#include <random>
+#include <limits>
+
 #include "scenelib.h"
 
 #include "terrain_math.h"
@@ -40,6 +43,13 @@ namespace terrain_generator
 {
 
 QWidget* main_window;
+bool g_has_last_seed = false;
+int  g_last_seed = 0;
+
+static int make_auto_seed(){
+	std::random_device rd;
+	return static_cast<int>( rd() );
+}
 
 const char* init( void* hApp, void* pMainWidget ){
 	main_window = static_cast<QWidget*>( pMainWidget );
@@ -60,10 +70,15 @@ const char* getCommandTitleList(){
 
 void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush ){
 	if ( string_equal( command, "About" ) ) {
-		GlobalRadiant().m_pfnMessageBox( main_window,
+		const QString seed_text = g_has_last_seed ? QString::number( g_last_seed ) : "N/A";
+		const QString about_text =
 			"Terrain Generator\n\n"
 			"Procedural CSG generation tool for id Tech 3 engines.\n\n"
-			"Developed by vallz and vld",
+			"Developed by vallz and vld\n\n"
+			"Last used seed: " + seed_text;
+		const QByteArray about_utf8 = about_text.toUtf8();
+		GlobalRadiant().m_pfnMessageBox( main_window,
+			about_utf8.constData(),
 			"About Terrain Generator",
 			EMessageBoxType::Info, 0 );
 		return;
@@ -215,6 +230,17 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		form->addRow( "Variance:", variance_spin );
 		auto *frequency_spin = new DoubleSpinBox( 0.0001, 1.0, 0.005, 4, 0.001 );
 		form->addRow( "Frequency:", frequency_spin );
+		auto *seed_widget = new QWidget;
+		auto *seed_hbox   = new QHBoxLayout( seed_widget );
+		seed_hbox->setContentsMargins( 0, 0, 0, 0 );
+		auto *seed_spin   = new SpinBox( std::numeric_limits<int>::min(), std::numeric_limits<int>::max(), make_auto_seed(), 0, 1 );
+		auto *auto_seed_cb = new QCheckBox( "Auto Seed" );
+		auto_seed_cb->setChecked( true );
+		seed_spin->setEnabled( false );
+		seed_hbox->addWidget( seed_spin );
+		seed_hbox->addWidget( auto_seed_cb );
+		seed_hbox->addStretch();
+		form->addRow( "Seed:", seed_widget );
 
 		// Texture — line edit + Pick button to grab from texture browser
 		auto *tex_widget = new QWidget;
@@ -317,6 +343,11 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double variance     = variance_spin->value();
 			const double frequency    = frequency_spin->value();
 			const double terrace      = terrace_spin->value();
+			int seed = seed_spin->value();
+			if ( auto_seed_cb->isChecked() ) {
+				seed = make_auto_seed();
+				seed_spin->setValue( seed );
+			}
 			const std::string texture_str = texture_edit->text().toStdString();
 			const char* texture       = texture_str.c_str();
 
@@ -397,21 +428,24 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			                     << " — bounds ("
 			                     << target.width_x << " x " << target.length_y << " x " << target.height_z
 			                     << "), step (" << step_x << " x " << step_y << ")"
+			                     << ", seed: " << seed
 			                     << ", texture: " << texture << "\n";
 
 			if ( is_tunnel ) {
 				const double cave_height    = ( shape == ShapeType::SlopeTunnel ) ? tun_height   : shape_height;
 				const double slope_height   = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0;
 				const double tunnel_terrace = ( shape == ShapeType::SlopeTunnel ) ? terrace      : 0.0;
-				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, noise, tunnel_terrace );
+				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, noise, tunnel_terrace, seed );
 				build_tunnel_brushes( target, step_x, step_y, maps, texture, cave_height, slope_height );
 			}
 			else {
 				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
-				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, noise, terrace );
+				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, noise, terrace, seed );
 				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally );
 			}
 
+			g_last_seed = seed;
+			g_has_last_seed = true;
 			globalOutputStream() << "TerrainGenerator: generation complete\n";
 			return true;
 		};
@@ -499,6 +533,11 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_target_mode );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   update_advanced );
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), update_shape );
+		QObject::connect( auto_seed_cb, &QCheckBox::toggled, [&]( bool checked ){
+			seed_spin->setEnabled( !checked );
+			if ( checked )
+				seed_spin->setValue( make_auto_seed() );
+		} );
 
 		// Set initial visibility
 		update_target_mode( target_combo->currentIndex() );
