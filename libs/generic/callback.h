@@ -211,7 +211,12 @@ class Callback<R(Ts...)> : public detail::CallbackBase<R(*)(void *, Ts...)>
 	using Base = detail::CallbackBase<R (*)(void *, Ts...)>;
 
 	static R nullThunk( void *, Ts... ){
-		return R{};
+		if constexpr ( std::is_void_v<R> ) {
+			return;
+		}
+		else{
+			return R{};
+		}
 	}
 
 public:

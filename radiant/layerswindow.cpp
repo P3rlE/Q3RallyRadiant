@@ -279,9 +279,9 @@ void LayersBrowser_constructTree( QTreeWidget *tree ){
 class QTreeWidget_layers : public QTreeWidget, public WindowObserver
 {
 protected:
-	bool m_drop = false;
+	bool m_dropInProgress = false;
 	void rowsInserted( const QModelIndex& parent, int start, int end ) override {
-		if( std::exchange( m_drop, false ) ){ // insertion source is drop
+		if( std::exchange( m_dropInProgress, false ) ){ // insertion source is drop
 			QTreeWidgetItem *parentItem = parent.isValid()? this->itemFromIndex( parent ) : this->invisibleRootItem();
 			QTreeWidgetItem *item = parentItem->child( start );
 			Layer *parentLayer = parent.isValid()? item_getLayer( parentItem ) : Node_getLayers( GlobalSceneGraph().root() );
@@ -314,8 +314,12 @@ protected:
 		// 	event->ignore();
 		// 	return;
 		// }
-		ASSERT_MESSAGE( !m_drop, "dropEvent() without rowsInserted()" );
-		m_drop = true;
+		if( m_dropInProgress ){
+			globalErrorStream() << "dropEvent() without rowsInserted()\n";
+			event->ignore();
+			return;
+		}
+		m_dropInProgress = true;
 		QTreeWidget::dropEvent( event );
 	}
 private:
@@ -584,4 +588,3 @@ void Layers_registerCommands(){
 void Layers_registerShortcuts(){
 	command_connect_accelerator( "LayersMenu" );
 }
-

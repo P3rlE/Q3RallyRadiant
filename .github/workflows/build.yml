@@ -127,22 +127,30 @@ jobs:
 
       - name: Set up build environment
         run: |
+          echo "HOMEBREW_PREFIX=$(brew --prefix)" >> $GITHUB_ENV
           echo "QT5_DIR=$(brew --prefix qt@5)" >> $GITHUB_ENV
           echo "ASSIMP_DIR=$(brew --prefix assimp)" >> $GITHUB_ENV
           echo "JPEG_DIR=$(brew --prefix jpeg-turbo)" >> $GITHUB_ENV
           echo "$(brew --prefix qt@5)/bin" >> $GITHUB_PATH
 
+      - name: Verify Qt5 architecture
+        run: |
+          file "$QT5_DIR/lib/libQt5Core.dylib"
+          lipo -info "$QT5_DIR/lib/libQt5Core.dylib"
+          lipo -archs "$QT5_DIR/lib/libQt5Core.dylib" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
+
       - name: Build
         run: |
           export PATH="$QT5_DIR/bin:$PATH"
-          export PKG_CONFIG_PATH="$QT5_DIR/lib/pkgconfig:$ASSIMP_DIR/lib/pkgconfig:$JPEG_DIR/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
-          export CPPFLAGS="-I$QT5_DIR/include -I$ASSIMP_DIR/include -I$JPEG_DIR/include $CPPFLAGS"
-          export LDFLAGS="-L$QT5_DIR/lib -L$ASSIMP_DIR/lib -L$JPEG_DIR/lib $LDFLAGS"
+          export ARCHFLAGS="-arch ${{ matrix.arch }}"
+          export PKG_CONFIG_PATH="$QT5_DIR/lib/pkgconfig:$ASSIMP_DIR/lib/pkgconfig:$JPEG_DIR/lib/pkgconfig:$HOMEBREW_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export CPPFLAGS="-I$QT5_DIR/include -I$ASSIMP_DIR/include -I$JPEG_DIR/include $ARCHFLAGS $CPPFLAGS"
+          export LDFLAGS="-L$QT5_DIR/lib -L$ASSIMP_DIR/lib -L$JPEG_DIR/lib $ARCHFLAGS $LDFLAGS"
           # Fix: macOS hat kein <GL/gl.h>, nur <OpenGL/gl.h> — Symlink als Shim anlegen
           sudo mkdir -p /usr/local/include/GL
           sudo ln -sf "$(xcrun --show-sdk-path)/System/Library/Frameworks/OpenGL.framework/Headers/gl.h" /usr/local/include/GL/gl.h
-          export CFLAGS="-DGL_SILENCE_DEPRECATION $CFLAGS"
-          export CXXFLAGS="-DGL_SILENCE_DEPRECATION $CXXFLAGS"
+          export CFLAGS="-DGL_SILENCE_DEPRECATION $ARCHFLAGS $CFLAGS"
+          export CXXFLAGS="-DGL_SILENCE_DEPRECATION $ARCHFLAGS $CXXFLAGS"
           make DEPENDENCIES_CHECK=off -j4
 
       - name: Package macOS build
