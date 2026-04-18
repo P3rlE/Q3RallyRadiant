@@ -130,5 +130,6 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" \
             release-files/* \
+            --repo "${{ github.repository }}" \
             --title "$RELEASE_TITLE" \
             --notes "Automated build from workflow run ${{ github.run_number }} on $(date +'%Y-%m-%d')."
