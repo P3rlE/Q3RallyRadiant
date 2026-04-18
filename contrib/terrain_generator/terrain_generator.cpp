@@ -17,6 +17,8 @@
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QFileDialog>
+#include <QImage>
 #include "gtkutil/spinbox.h"
 #include "gtkutil/combobox.h"
 
@@ -47,9 +49,71 @@ QWidget* main_window;
 bool g_has_last_seed = false;
 int  g_last_seed = 0;
 
+enum class MaskPreset {
+	None = 0,
+	Radial = 1,
+	LinearFalloff = 2,
+	Centerline = 3,
+	ImageImport = 4
+};
+
 static int make_auto_seed(){
 	std::random_device rd;
 	return static_cast<int>( rd() );
+}
+
+static double clamp01( double v ){
+	return std::max( 0.0, std::min( 1.0, v ) );
+}
+
+static MaskMap build_mask_map( const BrushData& target, double step_x, double step_y, MaskPreset preset, const QString& image_path ){
+	MaskMap mask_map;
+	if ( preset == MaskPreset::None ) {
+		return mask_map;
+	}
+
+	QImage mask_image;
+	if ( preset == MaskPreset::ImageImport && !image_path.trimmed().isEmpty() ) {
+		mask_image = QImage( image_path );
+	}
+
+	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
+		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			const double nx = target.width_x > 0.0 ? ( x - target.min_x ) / target.width_x : 0.0;
+			const double ny = target.length_y > 0.0 ? ( y - target.min_y ) / target.length_y : 0.0;
+			double weight = 1.0;
+			switch ( preset ) {
+			case MaskPreset::Radial: {
+				const double dx = nx - 0.5;
+				const double dy = ny - 0.5;
+				const double radial = std::sqrt( dx * dx + dy * dy ) / 0.5;
+				weight = 1.0 - clamp01( radial );
+				break;
+			}
+			case MaskPreset::LinearFalloff:
+				weight = 1.0 - clamp01( nx );
+				break;
+			case MaskPreset::Centerline:
+				weight = 1.0 - clamp01( std::abs( nx - 0.5 ) / 0.5 );
+				break;
+			case MaskPreset::ImageImport: {
+				if ( mask_image.isNull() ) {
+					weight = 1.0;
+					break;
+				}
+				const int px = std::clamp( (int)std::round( nx * ( mask_image.width() - 1 ) ), 0, mask_image.width() - 1 );
+				const int py = std::clamp( (int)std::round( ny * ( mask_image.height() - 1 ) ), 0, mask_image.height() - 1 );
+				weight = qGray( mask_image.pixel( px, py ) ) / 255.0;
+				break;
+			}
+			default:
+				break;
+			}
+			mask_map[{ std::round( x * 100.0 ) / 100.0, std::round( y * 100.0 ) / 100.0 }] = clamp01( weight );
+		}
+	}
+
+	return mask_map;
 }
 
 const char* init( void* hApp, void* pMainWidget ){
@@ -244,6 +308,25 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		form->addRow( "Variance:", variance_spin );
 		auto *frequency_spin = new DoubleSpinBox( 0.0001, 1.0, 0.005, 4, 0.001 );
 		form->addRow( "Frequency:", frequency_spin );
+
+		auto *mask_preset_combo = new ComboBox;
+		mask_preset_combo->addItem( "None",                  (int)MaskPreset::None );
+		mask_preset_combo->addItem( "Radial Mask",           (int)MaskPreset::Radial );
+		mask_preset_combo->addItem( "Linear Falloff",        (int)MaskPreset::LinearFalloff );
+		mask_preset_combo->addItem( "Centerline Favoring",   (int)MaskPreset::Centerline );
+		mask_preset_combo->addItem( "Image Import (PNG)",    (int)MaskPreset::ImageImport );
+		form->addRow( "Mask Preset:", mask_preset_combo );
+
+		auto *mask_image_widget = new QWidget;
+		auto *mask_image_hbox   = new QHBoxLayout( mask_image_widget );
+		mask_image_hbox->setContentsMargins( 0, 0, 0, 0 );
+		auto *mask_image_edit   = new QLineEdit;
+		auto *mask_image_pick   = new QPushButton( "Browse" );
+		mask_image_pick->setFixedWidth( 70 );
+		mask_image_hbox->addWidget( mask_image_edit );
+		mask_image_hbox->addWidget( mask_image_pick );
+		form->addRow( "Mask PNG:", mask_image_widget );
+
 		auto *seed_widget = new QWidget;
 		auto *seed_hbox   = new QHBoxLayout( seed_widget );
 		seed_hbox->setContentsMargins( 0, 0, 0, 0 );
@@ -375,6 +458,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double tun_height = tunnel_height_spin->value();
 			const double variance     = variance_spin->value();
 			const double frequency    = frequency_spin->value();
+			const MaskPreset mask_preset = (MaskPreset)mask_preset_combo->currentData().toInt();
 			const double terrace      = terrace_spin->value();
 			const double curve_radius = curve_radius_spin->value();
 			const double bank_angle   = banking_angle_spin->value();
@@ -386,6 +470,17 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 			const std::string texture_str = texture_edit->text().toStdString();
 			const char* texture       = texture_str.c_str();
+			if ( mask_preset == MaskPreset::ImageImport ) {
+				const QString mask_path = mask_image_edit->text().trimmed();
+				if ( mask_path.isEmpty() || QImage( mask_path ).isNull() ) {
+					GlobalRadiant().m_pfnMessageBox( main_window,
+						"Mask import is enabled, but the PNG file is missing or invalid.\n\n"
+						"Please select a valid grayscale PNG or switch the mask preset.",
+						"Terrain Generator — Invalid Mask PNG",
+						EMessageBoxType::Error, 0 );
+					return false;
+				}
+			}
 
 			// --- Determine bounds (must happen before deleting the selection brush) ---
 			BrushData target;
@@ -459,6 +554,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 
 			adjust_bounds_to_fit_grid( target, step_x, step_y );
+			const MaskMap mask_map = build_mask_map( target, step_x, step_y, mask_preset, mask_image_edit->text() );
 
 			// --- Generate ---
 			const bool is_tunnel = ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
@@ -479,13 +575,13 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				const double cave_height    = ( shape == ShapeType::SlopeTunnel ) ? tun_height   : shape_height;
 				const double slope_height   = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0;
 				const double tunnel_terrace = ( shape == ShapeType::SlopeTunnel ) ? terrace      : 0.0;
-				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, noise, tunnel_terrace, seed );
+				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, mask_map, noise, tunnel_terrace, seed );
 				build_tunnel_brushes( target, step_x, step_y, maps, texture, cave_height, slope_height,
 				                     build_options, preview_mode ? &preview_entities : nullptr );
 			}
 			else {
 				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
-				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency,
+				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, mask_map,
 				                                      noise, terrace, curve_radius, bank_angle, ramp_length, seed );
 				build_terrain_brushes( target, step_x, step_y, height_map, texture, split_diagonally,
 				                      build_options, preview_mode ? &preview_entities : nullptr );
@@ -599,10 +695,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			set_row_visible( terrace_spin, !is_flat && st != ShapeType::Tunnel );
 		};
 
+		auto update_mask_controls = [&]( int idx ){
+			const MaskPreset preset = (MaskPreset)mask_preset_combo->itemData( idx ).toInt();
+			set_row_visible( mask_image_widget, preset == MaskPreset::ImageImport );
+		};
+
 		// Wire signals
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_target_mode );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   update_advanced );
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), update_shape );
+		QObject::connect( mask_preset_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_mask_controls );
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
@@ -622,6 +724,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( terrace_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( variance_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( frequency_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( mask_preset_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
+		QObject::connect( mask_image_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
 		QObject::connect( seed_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( texture_edit, &QLineEdit::textChanged, [&]( const QString& ){ rerender_preview_if_active(); } );
 
@@ -631,10 +735,17 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				seed_spin->setValue( make_auto_seed() );
 		} );
 
+		QObject::connect( mask_image_pick, &QPushButton::clicked, [&](){
+			const QString path = QFileDialog::getOpenFileName( &dialog, "Select Grayscale Mask (PNG)", QString(), "PNG Files (*.png)" );
+			if ( !path.isEmpty() )
+				mask_image_edit->setText( path );
+		} );
+
 		// Set initial visibility
 		update_target_mode( target_combo->currentIndex() );
 		update_advanced( false );
 		update_shape( shape_combo->currentIndex() );
+		update_mask_controls( mask_preset_combo->currentIndex() );
 
 		// show() instead of exec() so the dialog is non-modal — the texture
 		// browser panel (and all other Radiant windows) remain interactive

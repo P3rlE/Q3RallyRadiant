@@ -45,6 +45,17 @@ static double sample_noise( NoiseType noise_type, double x, double y, TerrainRng
 	}
 }
 
+static double sample_mask_weight( const MaskMap& mask_map, double x, double y ){
+	if ( mask_map.empty() ) {
+		return 1.0;
+	}
+	const auto it = mask_map.find( { round2( x ), round2( y ) } );
+	if ( it == mask_map.end() ) {
+		return 1.0;
+	}
+	return std::clamp( it->second, 0.0, 1.0 );
+}
+
 // ---------------------------------------------------------------------------
 
 BrushData make_manual_brush_data( double width, double length, double height ){
@@ -86,6 +97,7 @@ void adjust_bounds_to_fit_grid( BrushData& target, double step_x, double step_y 
 HeightMap generate_height_map( const BrushData& target, double step_x, double step_y,
                                 ShapeType shape_type, double shape_height,
                                 double variance, double frequency,
+                                const MaskMap& mask_map,
                                 NoiseType noise_type, double terrace_step,
                                 double curve_radius, double banking_angle_deg,
                                 double ramp_length,
@@ -178,12 +190,15 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 
 			double noise_z = 0.0;
 			if ( variance > 0.0 ) {
+				const double mask_weight = sample_mask_weight( mask_map, x, y );
+				const double local_variance = variance * mask_weight;
+				const double local_frequency = frequency * mask_weight;
 				if ( noise_type == NoiseType::Random ) {
-					noise_z = ( rng.random_double() * ( variance * 2.0 ) ) - variance;
+					noise_z = ( rng.random_double() * ( local_variance * 2.0 ) ) - local_variance;
 				} else {
 					noise_z = sample_noise( noise_type,
-					                        ( x + seed_x ) * frequency,
-					                        ( y + seed_y ) * frequency, rng ) * variance;
+					                        ( x + seed_x ) * local_frequency,
+					                        ( y + seed_y ) * local_frequency, rng ) * local_variance;
 				}
 			}
 
@@ -205,6 +220,7 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
                                         double cave_height, double slope_height,
                                         double variance, double frequency,
+                                        const MaskMap& mask_map,
                                         NoiseType noise_type, double terrace_step,
                                         int seed ){
 	TunnelMaps result;
@@ -232,14 +248,17 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 
 			double floor_noise = 0.0, ceil_noise = 0.0;
 			if ( variance > 0.0 ) {
+				const double mask_weight = sample_mask_weight( mask_map, x, y );
+				const double local_variance = variance * mask_weight;
+				const double local_frequency = frequency * mask_weight;
 				if ( noise_type == NoiseType::Random ) {
-					floor_noise = floor_rng.random_double() * variance;
-					ceil_noise  = ceil_rng.random_double() * variance;
+					floor_noise = floor_rng.random_double() * local_variance;
+					ceil_noise  = ceil_rng.random_double() * local_variance;
 				} else {
 					floor_noise = std::abs( sample_noise( noise_type,
-					    ( x + seed_floor_x ) * frequency, ( y + seed_floor_y ) * frequency, floor_rng ) ) * variance;
+					    ( x + seed_floor_x ) * local_frequency, ( y + seed_floor_y ) * local_frequency, floor_rng ) ) * local_variance;
 					ceil_noise  = std::abs( sample_noise( noise_type,
-					    ( x + seed_ceil_x  ) * frequency, ( y + seed_ceil_y  ) * frequency, ceil_rng ) ) * variance;
+					    ( x + seed_ceil_x  ) * local_frequency, ( y + seed_ceil_y  ) * local_frequency, ceil_rng ) ) * local_variance;
 				}
 			}
 
@@ -281,22 +300,28 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 
 			double wall_noise = 0.0;
 			if ( variance > 0.0 ) {
+				const double left_mask_weight = sample_mask_weight( mask_map, target.min_x, y );
+				const double left_local_variance = variance * left_mask_weight;
+				const double left_local_frequency = frequency * left_mask_weight;
 				if ( noise_type == NoiseType::Random ) {
-					wall_noise = wall_l_rng.random_double() * variance;
+					wall_noise = wall_l_rng.random_double() * left_local_variance;
 				} else {
 					wall_noise = std::abs( sample_noise( noise_type,
-					    ( y + seed_wall_l ) * frequency, ( z + seed_wall_l ) * frequency, wall_l_rng ) ) * variance;
+					    ( y + seed_wall_l ) * left_local_frequency, ( z + seed_wall_l ) * left_local_frequency, wall_l_rng ) ) * left_local_variance;
 				}
 			}
 			result.left_wall_map[{ ry, rz }] = std::round( target.min_x + wall_noise );
 
 			wall_noise = 0.0;
 			if ( variance > 0.0 ) {
+				const double right_mask_weight = sample_mask_weight( mask_map, target.max_x, y );
+				const double right_local_variance = variance * right_mask_weight;
+				const double right_local_frequency = frequency * right_mask_weight;
 				if ( noise_type == NoiseType::Random ) {
-					wall_noise = wall_r_rng.random_double() * variance;
+					wall_noise = wall_r_rng.random_double() * right_local_variance;
 				} else {
 					wall_noise = std::abs( sample_noise( noise_type,
-					    ( y + seed_wall_r ) * frequency, ( z + seed_wall_r ) * frequency, wall_r_rng ) ) * variance;
+					    ( y + seed_wall_r ) * right_local_frequency, ( z + seed_wall_r ) * right_local_frequency, wall_r_rng ) ) * right_local_variance;
 				}
 			}
 			result.right_wall_map[{ ry, rz }] = std::round( target.max_x - wall_noise );

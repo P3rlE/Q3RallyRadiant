@@ -8,6 +8,7 @@
 
 using HeightMap   = std::map<std::pair<double, double>, double>;
 using WallMap     = std::map<std::pair<double, double>, double>;
+using MaskMap     = std::map<std::pair<double, double>, double>;
 
 struct TunnelMaps
 {
@@ -47,6 +48,7 @@ void adjust_bounds_to_fit_grid( BrushData& target, double step_x, double step_y 
 HeightMap generate_height_map( const BrushData& target, double step_x, double step_y,
                                 ShapeType shape_type, double shape_height,
                                 double variance, double frequency,
+                                const MaskMap& mask_map,
                                 NoiseType noise_type, double terrace_step,
                                 double curve_radius, double banking_angle_deg,
                                 double ramp_length,
@@ -55,5 +57,6 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
                                         double cave_height, double slope_height,
                                         double variance, double frequency,
+                                        const MaskMap& mask_map,
                                         NoiseType noise_type, double terrace_step,
                                         int seed );
