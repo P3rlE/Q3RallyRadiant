@@ -93,6 +93,26 @@ Conflicts are expected in `radiant/gtkdlgs.cpp`, `radiant/mainframe.cpp` and `ra
 
 ---
 
+## Parallel installation with NetRadiant (no settings conflicts)
+
+Q3RallyRadiant now stores user config in a dedicated folder with product suffix:
+
+- **new path schema:** `Q3RallyRadiant-1.<major>.<minor>/`
+- **legacy schema (shared with NetRadiant):** `1.<major>.<minor>/`
+
+This keeps Q3RallyRadiant and NetRadiant side-by-side without overwriting each other's preferences.
+
+On first start, if Q3RallyRadiant finds an existing legacy settings folder and no new Q3RallyRadiant folder yet, it offers a one-time import. Imported data is copied; afterwards both editors keep separate configuration trees.
+
+Installer version marker files are also product-specific now:
+
+- `Q3RALLY_RADIANT_MAJOR`
+- `Q3RALLY_RADIANT_MINOR`
+
+If those files don't match the running binary version, startup is blocked with an explicit Q3RallyRadiant mismatch message.
+
+---
+
 ## Credits
 
 - **[NetRadiant-custom](https://github.com/Garux/netradiant-custom)** by Garux — the upstream editor this fork is based on
