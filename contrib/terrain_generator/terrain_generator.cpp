@@ -385,6 +385,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		// (if the browser was closed before Pick opened it) auto-close it.
 		QString last_polled_shader = texture_edit->text();
 		bool close_browser_on_pick = false;
+		QLineEdit* active_mat_edit = nullptr;
 
 		auto *pick_timer = new QTimer( &dialog );
 		pick_timer->setInterval( 100 );
@@ -411,9 +412,6 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		form->addRow( "Base Material:", tex_widget );
 
 		// Pointer to whichever material field's Pick button was last pressed.
-		// The pick_timer uses this to route the selected shader to the right field.
-		QLineEdit* active_mat_edit = nullptr;
-
 		// Helper: build a [QLineEdit | Pick] row and wire the Pick button.
 		auto make_mat_row = [&]( const QString& label ) -> QLineEdit* {
 			auto *w    = new QWidget;
