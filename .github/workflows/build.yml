@@ -156,6 +156,12 @@ jobs:
           lipo -info "$QT5_DIR/lib/libQt5Core.dylib"
           lipo -archs "$QT5_DIR/lib/libQt5Core.dylib" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
 
+      - name: Verify Qt5 architecture
+        run: |
+          file "$QT5_DIR/lib/libQt5Core.dylib"
+          lipo -info "$QT5_DIR/lib/libQt5Core.dylib"
+          lipo -archs "$QT5_DIR/lib/libQt5Core.dylib" | tr ' ' '\n' | grep -x "${{ matrix.arch }}"
+
       - name: Build
         run: |
           export PATH="$QT5_DIR/bin:$PATH"
