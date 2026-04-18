@@ -64,6 +64,10 @@
 #include "main.h"
 
 #include <chrono>
+#include <functional>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QThread>
 
 #include "version.h"
@@ -237,9 +241,67 @@ void paths_init(){
 
 	Q_mkdir( home );
 
-	g_strSettingsPath = StringStream( home, "1." RADIANT_MAJOR_VERSION "." RADIANT_MINOR_VERSION "/" );
+	const auto legacySettingsPath = StringStream( home, "1." RADIANT_MAJOR_VERSION "." RADIANT_MINOR_VERSION "/" );
+	const auto q3rallySettingsPath = StringStream( home, "Q3RallyRadiant-1." RADIANT_MAJOR_VERSION "." RADIANT_MINOR_VERSION "/" );
+	g_strSettingsPath = q3rallySettingsPath;
 
 	Q_mkdir( g_strSettingsPath.c_str() );
+
+	const std::function<bool( const QString&, const QString& )> copy_settings_tree = [&]( const QString& from, const QString& to ){
+		const QDir sourceDir( from );
+		if( !sourceDir.exists() ) {
+			return false;
+		}
+
+		QDir targetDir( to );
+		if( !targetDir.exists() && !QDir().mkpath( targetDir.path() ) ) {
+			return false;
+		}
+
+		const auto entries = sourceDir.entryInfoList( QDir::NoDotAndDotDot | QDir::AllEntries );
+		for( const QFileInfo& entry : entries )
+		{
+			const QString targetPath = targetDir.filePath( entry.fileName() );
+			if( entry.isDir() ) {
+				if( !copy_settings_tree( entry.absoluteFilePath(), targetPath ) ) {
+					return false;
+				}
+				continue;
+			}
+
+			if( QFile::exists( targetPath ) ) {
+				continue;
+			}
+
+			if( !QFile::copy( entry.absoluteFilePath(), targetPath ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	const auto legacyQDir = QDir( QString::fromLocal8Bit( legacySettingsPath.c_str() ) );
+	const auto q3rallyQDir = QDir( QString::fromLocal8Bit( q3rallySettingsPath.c_str() ) );
+	const bool legacyHasConfig = legacyQDir.exists() && !legacyQDir.entryInfoList( QDir::NoDotAndDotDot | QDir::AllEntries ).isEmpty();
+	const bool q3rallyHasConfig = q3rallyQDir.exists() && !q3rallyQDir.entryInfoList( QDir::NoDotAndDotDot | QDir::AllEntries ).isEmpty();
+	if( legacyHasConfig && !q3rallyHasConfig ) {
+		const auto migrationPrompt = StringStream(
+			"Detected existing NetRadiant-compatible settings at\n",
+			legacySettingsPath, "\n\n",
+			"Q3RallyRadiant now stores settings separately at\n",
+			q3rallySettingsPath, "\n\n",
+			"Import the existing settings now?" );
+
+		if( qt_MessageBox( 0, migrationPrompt, "Q3RallyRadiant Settings Migration", EMessageBoxType::Question ) == eIDYES ) {
+			if( copy_settings_tree( QString::fromLocal8Bit( legacySettingsPath.c_str() ), QString::fromLocal8Bit( q3rallySettingsPath.c_str() ) ) ) {
+				globalOutputStream() << "Imported legacy settings from " << legacySettingsPath << " to " << q3rallySettingsPath << '\n';
+			}
+			else{
+				qt_MessageBox( 0, "Settings import failed. Q3RallyRadiant will continue with default settings.", "Q3RallyRadiant Settings Migration", EMessageBoxType::Error );
+			}
+		}
+	}
 
 	g_strAppPath = environment_get_app_path();
 
@@ -280,13 +342,21 @@ bool check_version(){
 	// let's leave it disabled in debug mode in any case
 	// http://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=431
 #ifndef _DEBUG
-	// locate and open RADIANT_MAJOR and RADIANT_MINOR
-	if ( !( check_version_file( StringStream( AppPath_get(), "RADIANT_MAJOR" ), RADIANT_MAJOR_VERSION )
-	     && check_version_file( StringStream( AppPath_get(), "RADIANT_MINOR" ), RADIANT_MINOR_VERSION ) ) ) {
+	// locate and open Q3RALLY_RADIANT_MAJOR and Q3RALLY_RADIANT_MINOR
+	const bool versionMatchesQ3RallySchema =
+		check_version_file( StringStream( AppPath_get(), "Q3RALLY_RADIANT_MAJOR" ), RADIANT_MAJOR_VERSION )
+		&& check_version_file( StringStream( AppPath_get(), "Q3RALLY_RADIANT_MINOR" ), RADIANT_MINOR_VERSION );
+	const bool versionMatchesLegacySchema =
+		check_version_file( StringStream( AppPath_get(), "RADIANT_MAJOR" ), RADIANT_MAJOR_VERSION )
+		&& check_version_file( StringStream( AppPath_get(), "RADIANT_MINOR" ), RADIANT_MINOR_VERSION );
+	if ( !( versionMatchesQ3RallySchema || versionMatchesLegacySchema ) ) {
 		const auto msg = StringStream(
-			"This editor binary (" RADIANT_VERSION ") doesn't match what the latest setup has configured in this directory\n"
-			"Make sure you run the right/latest editor binary you installed\n", AppPath_get() );
-		qt_MessageBox( 0, msg, "Radiant" );
+			"This Q3RallyRadiant binary (" RADIANT_VERSION ") doesn't match the installer metadata in this directory.\n"
+			"Expected files:\n"
+			"  Q3RALLY_RADIANT_MAJOR\n"
+			"  Q3RALLY_RADIANT_MINOR\n\n"
+			"Please run the matching/latest Q3RallyRadiant build for:\n", AppPath_get() );
+		qt_MessageBox( 0, msg, "Q3RallyRadiant" );
 		return false;
 	}
 #endif

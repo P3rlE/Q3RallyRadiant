@@ -43,3 +43,19 @@ Release-Artefakte übernehmen dasselbe Schema direkt aus `RADIANT_VERSION_NUMBER
 - Windows-Release: `q3rallyradiant-<version>-<YYYYMMDD>-win32-7z.exe`
 
 Damit sind Versionstext in UI/Logs und Paketnamen konsistent.
+
+## Installations-/Laufzeit-Validierung
+
+Q3RallyRadiant prüft beim Start produkt-spezifische Markerdateien im Installationsverzeichnis:
+
+- `Q3RALLY_RADIANT_MAJOR`
+- `Q3RALLY_RADIANT_MINOR`
+
+Diese müssen zu `RADIANT_MAJOR_VERSION` und `RADIANT_MINOR_VERSION` des laufenden Binaries passen.
+
+Zusätzlich nutzt Q3RallyRadiant seit dem neuen Schema einen separaten Settings-Pfad:
+
+- `Q3RallyRadiant-1.<major>.<minor>/` (neu, konfliktfrei neben NetRadiant)
+- `1.<major>.<minor>/` (legacy)
+
+Falls nur ein Legacy-Pfad vorhanden ist, kann dessen Inhalt beim ersten Start optional importiert werden. Danach bleiben NetRadiant und Q3RallyRadiant in getrennten Konfigurationsverzeichnissen.
