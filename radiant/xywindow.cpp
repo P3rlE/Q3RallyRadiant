@@ -1055,7 +1055,7 @@ void XYWnd::XY_MouseMoved( int x, int y, unsigned int buttons ){
 				"x:: ", formatDisplayValue( m_mousePosition[0], 1 ).c_str(),
 				"  y:: ", formatDisplayValue( m_mousePosition[1], 1 ).c_str(),
 				"  z:: ", formatDisplayValue( m_mousePosition[2], 1 ).c_str(),
-				" ", displayUnitSuffix()
+				" ", CopiedString( displayUnitSuffix() )
 			);
 			g_pParentWnd->SetStatusText( c_status_position, status );
 		}

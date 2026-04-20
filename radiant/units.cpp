@@ -2,7 +2,6 @@
 
 #include <cstdio>
 
-#include "stream/stringstream.h"
 
 double meters_per_quake_unit = 0.0254;
 
@@ -64,10 +63,11 @@ CopiedString formatDisplayValue( double qu, int decimals ){
 }
 
 CopiedString formatDisplayTriplet( const Vector3& qu, int decimals ){
-	return StringStream<128>(
-		formatDisplayValue( qu[0], decimals ).c_str(), ' ',
-		formatDisplayValue( qu[1], decimals ).c_str(), ' ',
-		formatDisplayValue( qu[2], decimals ).c_str(), ' ',
-		displayUnitSuffix()
-	).c_str();
+	const CopiedString x = formatDisplayValue( qu[0], decimals );
+	const CopiedString y = formatDisplayValue( qu[1], decimals );
+	const CopiedString z = formatDisplayValue( qu[2], decimals );
+
+	char buffer[256];
+	std::snprintf( buffer, sizeof( buffer ), "%s %s %s %s", x.c_str(), y.c_str(), z.c_str(), displayUnitSuffix() );
+	return buffer;
 }
