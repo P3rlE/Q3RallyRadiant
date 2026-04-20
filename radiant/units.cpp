@@ -28,6 +28,30 @@ void setDisplayUnit( DisplayUnit displayUnit ){
 	g_displayUnit = displayUnit;
 }
 
+DisplayUnit displayUnitFromInt( int value ){
+	switch ( value ) {
+	case 1:
+		return DisplayUnit::Meters;
+	case 2:
+		return DisplayUnit::Miles;
+	case 0:
+	default:
+		return DisplayUnit::QuakeUnits;
+	}
+}
+
+int displayUnitToInt( DisplayUnit displayUnit ){
+	switch ( displayUnit ) {
+	case DisplayUnit::Meters:
+		return 1;
+	case DisplayUnit::Miles:
+		return 2;
+	case DisplayUnit::QuakeUnits:
+	default:
+		return 0;
+	}
+}
+
 void setMetersPerQuakeUnit( double metersPerQuakeUnit ){
 	if ( metersPerQuakeUnit > 0.0 ) {
 		meters_per_quake_unit = metersPerQuakeUnit;
