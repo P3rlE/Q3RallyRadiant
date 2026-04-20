@@ -964,6 +964,7 @@ $(INSTALLDIR)/radiant.$(EXE): \
 	radiant/tools.o \
 	radiant/treemodel.o \
 	radiant/undo.o \
+	radiant/units.o \
 	radiant/url.o \
 	radiant/view.o \
 	radiant/watchbsp.o \
