@@ -2270,12 +2270,12 @@ void DisplayUnits_import( int value ){
 	setDisplayUnit( displayUnitFromInt( value ) );
 }
 
-int DisplayUnits_export(){
-	return displayUnitToInt( getDisplayUnit() );
+void DisplayUnits_export( const IntImportCallback& importer ){
+	importer( displayUnitToInt( getDisplayUnit() ) );
 }
 
 typedef FreeCaller<void(int), DisplayUnits_import> DisplayUnitsImportCaller;
-typedef FreeCaller<int(), DisplayUnits_export> DisplayUnitsExportCaller;
+typedef FreeCaller<void(const IntImportCallback&), DisplayUnits_export> DisplayUnitsExportCaller;
 
 
 void XYWindow_Construct(){
