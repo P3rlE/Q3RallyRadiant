@@ -67,6 +67,7 @@
 #include "feedback.h"
 #include "grid.h"
 #include "windowobservers.h"
+#include "units.h"
 
 #include "render.h"
 
@@ -1050,9 +1051,12 @@ void XYWnd::XY_MouseMoved( int x, int y, unsigned int buttons ){
 		m_window_observer->onMouseMotion( WindowVector( x, y ), modifiers_for_flags( buttons ) );
 
 		{
-			const auto status = StringStream<64>( "x:: ", FloatFormat( m_mousePosition[0], 6, 1 ),
-			                                    "  y:: ", FloatFormat( m_mousePosition[1], 6, 1 ),
-			                                    "  z:: ", FloatFormat( m_mousePosition[2], 6, 1 ) );
+			const auto status = StringStream<128>(
+				"x:: ", formatDisplayValue( m_mousePosition[0], 1 ).c_str(),
+				"  y:: ", formatDisplayValue( m_mousePosition[1], 1 ).c_str(),
+				"  z:: ", formatDisplayValue( m_mousePosition[2], 1 ).c_str(),
+				" ", CopiedString( displayUnitSuffix() )
+			);
 			g_pParentWnd->SetStatusText( c_status_position, status );
 		}
 
@@ -2262,6 +2266,17 @@ void Orthographic_registerPreferencesPage(){
 #include "preferencesystem.h"
 #include "stringio.h"
 
+void DisplayUnits_import( int value ){
+	setDisplayUnit( displayUnitFromInt( value ) );
+}
+
+void DisplayUnits_export( const IntImportCallback& importer ){
+	importer( displayUnitToInt( getDisplayUnit() ) );
+}
+
+typedef FreeCaller<void(int), DisplayUnits_import> DisplayUnitsImportCaller;
+typedef FreeCaller<void(const IntImportCallback&), DisplayUnits_export> DisplayUnitsExportCaller;
+
 
 void XYWindow_Construct(){
 	GlobalToggles_insert( "ToggleView", ToggleShown::ToggleCaller( g_xy_top_shown ), ToggleItem::AddCallbackCaller( g_xy_top_shown.m_item ) );
@@ -2283,6 +2298,7 @@ void XYWindow_Construct(){
 	GlobalPreferenceSystem().registerPreference( "ShowSize2d", BoolImportStringCaller( g_xywindow_globals_private.m_bShowSize ), BoolExportStringCaller( g_xywindow_globals_private.m_bShowSize ) );
 	GlobalPreferenceSystem().registerPreference( "ShowCrosshair", BoolImportStringCaller( g_bCrossHairs ), BoolExportStringCaller( g_bCrossHairs ) );
 	GlobalPreferenceSystem().registerPreference( "NoStipple", BoolImportStringCaller( g_xywindow_globals.m_bNoStipple ), BoolExportStringCaller( g_xywindow_globals.m_bNoStipple ) );
+	GlobalPreferenceSystem().registerPreference( "DisplayUnits", makeIntStringImportCallback( DisplayUnitsImportCaller() ), makeIntStringExportCallback( DisplayUnitsExportCaller() ) );
 	GlobalPreferenceSystem().registerPreference( "SI_ShowCoords", BoolImportStringCaller( g_xywindow_globals_private.show_coordinates ), BoolExportStringCaller( g_xywindow_globals_private.show_coordinates ) );
 	GlobalPreferenceSystem().registerPreference( "SI_ShowOutlines", BoolImportStringCaller( g_xywindow_globals_private.show_outline ), BoolExportStringCaller( g_xywindow_globals_private.show_outline ) );
 	GlobalPreferenceSystem().registerPreference( "SI_ShowAxis", BoolImportStringCaller( g_xywindow_globals_private.show_axis ), BoolExportStringCaller( g_xywindow_globals_private.show_axis ) );

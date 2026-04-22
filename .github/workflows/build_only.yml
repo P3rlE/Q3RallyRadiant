@@ -1,0 +1,119 @@
+name: build_only
+
+on:
+  workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msys:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64]
+        include:
+          - arch: x86_64
+            msystem: MINGW64
+            prefix: mingw-w64-x86_64
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          install: >-
+            base-devel
+            ${{ matrix.prefix }}-toolchain
+            ${{ matrix.prefix }}-qt5-base
+            ${{ matrix.prefix }}-qt5-svg
+            ${{ matrix.prefix }}-assimp
+            ${{ matrix.prefix }}-libxml2
+            git
+            unzip
+            p7zip
+          msystem: ${{ matrix.msystem }}
+          path-type: minimal
+          release: false
+          update: false
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          make MAKEFILE_CONF=msys2-Makefile.conf -j4
+          mkdir -p install/settings
+          7z a netradiant-custom-windows-${{ matrix.arch }}.zip ./install/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: netradiant-custom-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64]
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -y install \
+            mesa-common-dev \
+            libgl-dev \
+            libglx-dev \
+            libx11-dev \
+            qtbase5-dev \
+            libqt5svg5-dev \
+            libglib2.0-dev \
+            libjpeg8-dev \
+            libpng-dev \
+            libxml2-dev \
+            libassimp-dev \
+            zlib1g-dev \
+            p7zip-full \
+            unzip \
+            wget \
+            git
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          set -euxo pipefail
+          make CC=gcc-14 CXX=g++-14 CXXFLAGS="-Wno-deprecated-copy" -j4
+          chmod +x ./appimage.sh
+          ./appimage.sh || { echo "AppImage generation failed"; exit 1; }
+
+          VERSION_NUMBER="$(sed -n 's/^RADIANT_VERSION_NUMBER[[:space:]]*[?]?=[[:space:]]*//p' Makefile | head -n1)"
+          APPIMAGE_PATH="./q3rallyradiant-${VERSION_NUMBER}-x86_64.AppImage"
+
+          if [ ! -f "${APPIMAGE_PATH}" ]; then
+            echo "Error: AppImage file was not created at ${APPIMAGE_PATH}"
+            echo "Current directory contents:"
+            ls -la
+            echo "Known AppImage candidates:"
+            find . -maxdepth 1 -type f -name '*.AppImage' -print || true
+            exit 1
+          fi
+
+          7z a netradiant-custom-linux-${{ matrix.arch }}.7z "${APPIMAGE_PATH}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: netradiant-custom-linux-${{ matrix.arch }}.7z
+          if-no-files-found: error
