@@ -1599,21 +1599,22 @@ bool RallyPreflight_applyQuickFix( const RallyPreflightIssue& issue, RallyPrefli
 					}
 					return a->entity < b->entity;
 				} );
-					UndoableCommand undo( "q3rallyPreflightRenumberDuplicateOrder" );
-					for ( std::size_t i = 0; i < classEntities.size(); ++i ) {
-						const auto orderText = QString::number( static_cast<int>( i + 1 ) ).toLatin1();
-						classEntities[i]->entity->setKeyValue( "order", orderText.constData() );
-					}
-					status = QString( "%1: order neu von 1..%2 nummeriert." ).arg( issue.quickFixClassname.c_str() ).arg( classEntities.size() );
-					return true;
+				UndoableCommand undo( "q3rallyPreflightRenumberDuplicateOrder" );
+				for ( std::size_t i = 0; i < classEntities.size(); ++i ) {
+					const auto orderText = QString::number( static_cast<int>( i + 1 ) ).toLatin1();
+					classEntities[i]->entity->setKeyValue( "order", orderText.constData() );
+				}
+				status = QString( "%1: order neu von 1..%2 nummeriert." ).arg( issue.quickFixClassname.c_str() ).arg( classEntities.size() );
+				return true;
 			}
 		}
 		break;
 	case RallyQuickFixType::FixOriginSuggestion:
 		if ( issue.entity && !issue.quickFixSuggestion.isEmpty() ) {
 			UndoableCommand undo( "q3rallyPreflightFixOrigin" );
-				issue.entity->entity->setKeyValue( "origin", issue.quickFixSuggestion.toLatin1().constData() );
-				status = QString( "Origin auf \"%1\" gesetzt." ).arg( issue.quickFixSuggestion );
+			const auto originText = issue.quickFixSuggestion.toLatin1();
+			issue.entity->entity->setKeyValue( "origin", originText.constData() );
+			status = QString( "Origin auf \"%1\" gesetzt." ).arg( issue.quickFixSuggestion );
 			return true;
 		}
 		break;
