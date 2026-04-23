@@ -1236,7 +1236,7 @@ CopiedString AssetResolver_projectKey(){
 	if ( string_empty( name ) ) {
 		return "unnamed";
 	}
-	return PathCleaned( name ).c_str();
+	return StringStream( PathCleaned( name ) ).c_str();
 }
 
 CopiedString AssetResolver_remapSettingsKey( AssetKind kind ){
@@ -1311,7 +1311,7 @@ public:
 				else{
 					return;
 				}
-				m_refs.push_back( { m_entity, kind, key, PathCleaned( value ).c_str() } );
+				m_refs.push_back( { m_entity, kind, key, StringStream( PathCleaned( value ) ).c_str() } );
 			}
 		} keys( ent, m_refs );
 		ent->forEachKeyValue( keys );
@@ -1327,7 +1327,7 @@ std::vector<CopiedString> AssetResolver_collectVfsFiles(){
 		}
 		void visit( const char* name ) override {
 			if ( !string_empty( name ) ) {
-				files.insert( PathCleaned( name ).c_str() );
+				files.insert( StringStream( PathCleaned( name ) ).c_str() );
 			}
 		}
 	};
