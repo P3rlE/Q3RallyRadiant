@@ -803,7 +803,11 @@ private:
 		if( extent != _extents[i] ){
 			_extents[i] = extent;
 			m_labels[i].texFree();
-			m_labels[i].texAlloc( StringStream<16>( extent * 2 ), getColor( i ) );
+			const int decimals = displayUnitDefaultDecimals();
+			m_labels[i].texAlloc(
+				StringStream<32>( formatDisplayValue( extent * 2, decimals ).c_str(), " ", displayUnitSuffix() ),
+				getColor( i )
+			);
 		}
 	}
 };

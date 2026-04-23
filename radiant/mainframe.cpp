@@ -121,6 +121,7 @@
 #include "colors.h"
 #include "tools.h"
 #include "filterbar.h"
+#include "units.h"
 
 #include <map>
 #include <vector>
@@ -2251,9 +2252,10 @@ const char* ( *GridStatus_getTexdefTypeIdLabel )();
 void MainFrame::SetGridStatus(){
 	StringOutputStream status( 64 );
 	const char* lock = ( GridStatus_getTextureLockEnabled() ) ? "ON   " : "OFF  ";
+	const int decimals = displayUnitDefaultDecimals();
 	status << ( GetSnapGridSize() > 0 ? "G:" : "g:" ) << GridStatus_getGridSize()
 	       << "  F:" << GridStatus_getTexdefTypeIdLabel()
-	       << "  C:" << GridStatus_getFarClipDistance()
+	       << "  C:" << formatDisplayValue( GridStatus_getFarClipDistance(), decimals ).c_str() << " " << displayUnitSuffix()
 	       << "  L:" << lock;
 	SetStatusText( c_status_grid, status );
 }

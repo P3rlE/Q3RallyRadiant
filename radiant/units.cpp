@@ -95,3 +95,15 @@ CopiedString formatDisplayTriplet( const Vector3& qu, int decimals ){
 	std::snprintf( buffer, sizeof( buffer ), "%s %s %s %s", x.c_str(), y.c_str(), z.c_str(), displayUnitSuffix() );
 	return buffer;
 }
+
+int displayUnitDefaultDecimals(){
+	switch ( g_displayUnit ) {
+	case DisplayUnit::Meters:
+		return 2;
+	case DisplayUnit::Miles:
+		return 3;
+	case DisplayUnit::QuakeUnits:
+	default:
+		return 1;
+	}
+}
