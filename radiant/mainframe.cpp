@@ -32,6 +32,7 @@
 #include "product.h"
 
 #include "ifilesystem.h"
+#include "iarchive.h"
 #include "ientity.h"
 #include "iundo.h"
 #include "ishaders.h"
@@ -68,6 +69,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMessageBox>
+#include <QListWidget>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QFileInfo>
+#include <QDir>
 
 #include "commandlib.h"
 #include "scenelib.h"
@@ -130,6 +136,7 @@
 #include "tools.h"
 #include "filterbar.h"
 #include "units.h"
+#include "stream/filestream.h"
 
 #include <map>
 #include <vector>
@@ -137,6 +144,9 @@
 #include <cstdlib>
 #include <cstdio>
 #include <algorithm>
+#include <set>
+#include <unordered_map>
+#include <limits>
 
 
 // VFS
@@ -1188,6 +1198,349 @@ void create_grid_menu( QMenuBar *menubar ){
 	Grid_constructMenu( menu );
 }
 
+enum class AssetKind
+{
+	Texture,
+	Model,
+	Sound,
+};
+
+struct AssetReference
+{
+	Entity* entity{};
+	AssetKind kind{};
+	CopiedString key;
+	CopiedString value;
+};
+
+struct MissingAsset
+{
+	AssetKind kind{};
+	CopiedString requested;
+	std::vector<AssetReference*> refs;
+	std::vector<CopiedString> candidates;
+};
+
+QString AssetKind_toString( AssetKind kind ){
+	switch ( kind )
+	{
+	case AssetKind::Texture: return "Texture";
+	case AssetKind::Model: return "Model";
+	case AssetKind::Sound: return "Sound";
+	}
+	return "Asset";
+}
+
+CopiedString AssetResolver_projectKey(){
+	const char* name = Map_Name( g_map );
+	if ( string_empty( name ) ) {
+		return "unnamed";
+	}
+	return PathCleaned( name ).c_str();
+}
+
+CopiedString AssetResolver_remapSettingsKey( AssetKind kind ){
+	switch ( kind )
+	{
+	case AssetKind::Texture: return "Q3RallyAssetResolver/remapTexture";
+	case AssetKind::Model: return "Q3RallyAssetResolver/remapModel";
+	case AssetKind::Sound: return "Q3RallyAssetResolver/remapSound";
+	}
+	return "Q3RallyAssetResolver/remapUnknown";
+}
+
+using AssetRemapTable = std::unordered_map<std::string, std::string>;
+
+AssetRemapTable AssetResolver_loadRemaps( AssetKind kind ){
+	QSettings settings;
+	const QString settingsKey = QString( "%1/%2" ).arg( AssetResolver_remapSettingsKey( kind ).c_str(), AssetResolver_projectKey().c_str() );
+	const QJsonDocument json = QJsonDocument::fromJson( settings.value( settingsKey ).toByteArray() );
+	AssetRemapTable remaps;
+	const QJsonObject root = json.object();
+	for ( auto it = root.constBegin(); it != root.constEnd(); ++it )
+	{
+		remaps[it.key().toStdString()] = it.value().toString().toStdString();
+	}
+	return remaps;
+}
+
+void AssetResolver_saveRemaps( AssetKind kind, const AssetRemapTable& remaps ){
+	QSettings settings;
+	QJsonObject root;
+	for ( const auto&[from, to] : remaps )
+	{
+		root[from.c_str()] = to.c_str();
+	}
+	const QString settingsKey = QString( "%1/%2" ).arg( AssetResolver_remapSettingsKey( kind ).c_str(), AssetResolver_projectKey().c_str() );
+	settings.setValue( settingsKey, QJsonDocument( root ).toJson( QJsonDocument::Compact ) );
+}
+
+class AssetReferenceCollector : public scene::Graph::Walker
+{
+	std::vector<AssetReference>& m_refs;
+public:
+	AssetReferenceCollector( std::vector<AssetReference>& refs ) : m_refs( refs ){
+	}
+	bool pre( const scene::Path& path, scene::Instance& instance ) const override {
+		(void)instance;
+		Entity* ent = Node_getEntity( path.top() );
+		if ( !ent ) {
+			return true;
+		}
+		class KeyWalker : public Entity::Visitor
+		{
+			Entity* m_entity;
+			std::vector<AssetReference>& m_refs;
+		public:
+			KeyWalker( Entity* entity, std::vector<AssetReference>& refs ) : m_entity( entity ), m_refs( refs ){
+			}
+			void visit( const char* key, const char* value ) override {
+				if ( string_empty( value ) ) {
+					return;
+				}
+				AssetKind kind;
+				if ( string_equal( key, "model" ) ) {
+					kind = AssetKind::Model;
+				}
+				else if ( string_equal( key, "sound" ) ) {
+					kind = AssetKind::Sound;
+				}
+				else if ( string_equal( key, "texture" ) ) {
+					kind = AssetKind::Texture;
+				}
+				else{
+					return;
+				}
+				m_refs.push_back( { m_entity, kind, key, PathCleaned( value ).c_str() } );
+			}
+		} keys( ent, m_refs );
+		ent->forEachKeyValue( keys );
+		return true;
+	}
+};
+
+std::vector<CopiedString> AssetResolver_collectVfsFiles(){
+	struct CollectVisitor : public Archive::Visitor
+	{
+		std::set<std::string>& files;
+		CollectVisitor( std::set<std::string>& out ) : files( out ){
+		}
+		void visit( const char* name ) override {
+			if ( !string_empty( name ) ) {
+				files.insert( PathCleaned( name ).c_str() );
+			}
+		}
+	};
+
+	std::set<std::string> uniqueFiles;
+	struct ArchiveWalker
+	{
+		std::set<std::string>& files;
+		static void addArchive( ArchiveWalker& self, const char* archiveName ){
+			if ( Archive* archive = GlobalFileSystem().getArchive( archiveName, false ) ) {
+				CollectVisitor visitor( self.files );
+				archive->forEachFile( Archive::VisitorFunc( visitor, Archive::eFiles, std::numeric_limits<std::size_t>::max() ), "" );
+			}
+		}
+	};
+	ArchiveWalker walker{ uniqueFiles };
+	typedef ReferenceCaller<ArchiveWalker, void(const char*), ArchiveWalker::addArchive> ArchiveWalkerCaller;
+	GlobalFileSystem().forEachArchive( ArchiveWalkerCaller( walker ), false, false );
+
+	std::vector<CopiedString> out;
+	out.reserve( uniqueFiles.size() );
+	for ( const std::string& file : uniqueFiles )
+	{
+		out.emplace_back( file.c_str() );
+	}
+	return out;
+}
+
+bool AssetResolver_existsInVfs( const char* path ){
+	if ( ArchiveFile* file = GlobalFileSystem().openFile( path ) ) {
+		file->release();
+		return true;
+	}
+	return false;
+}
+
+std::vector<CopiedString> AssetResolver_findCandidates( AssetKind kind, const char* requested, const std::vector<CopiedString>& files ){
+	const QString req = requested;
+	const QString reqLower = req.toLower();
+	const QString base = QFileInfo( req ).fileName().toLower();
+	const char* preferredPrefix = kind == AssetKind::Texture ? "textures/" : kind == AssetKind::Model ? "models/" : "sound/";
+
+	std::vector<CopiedString> exact, nocase, basename;
+	for ( const CopiedString& file : files )
+	{
+		const QString candidate = file.c_str();
+		const QString candidateLower = candidate.toLower();
+		if ( candidate == req ) {
+			exact.push_back( file );
+		}
+		else if ( candidateLower == reqLower ) {
+			nocase.push_back( file );
+		}
+		else if ( candidateLower.startsWith( preferredPrefix ) && QFileInfo( candidate ).fileName().toLower() == base ) {
+			basename.push_back( file );
+		}
+	}
+	exact.insert( exact.end(), nocase.begin(), nocase.end() );
+	exact.insert( exact.end(), basename.begin(), basename.end() );
+	if ( exact.size() > 24 ) {
+		exact.resize( 24 );
+	}
+	return exact;
+}
+
+void AssetResolver_applyReplacement( MissingAsset& missing, const char* replacement, bool copyFileToProject ){
+	const QString replacementQ = replacement;
+	for ( AssetReference* ref : missing.refs )
+	{
+		ref->entity->setKeyValue( ref->key.c_str(), replacement );
+	}
+	if ( !copyFileToProject ) {
+		return;
+	}
+	const char* mapAbsolute = Map_Name( g_map );
+	const char* root = GlobalFileSystem().findRoot( mapAbsolute );
+	if ( string_empty( root ) ) {
+		return;
+	}
+	const QString sourceAbsolute = GlobalFileSystem().findFile( replacement );
+	if ( sourceAbsolute.isEmpty() ) {
+		return;
+	}
+	const QString targetAbsolute = QDir::fromNativeSeparators( QString( root ) + replacementQ );
+	QDir().mkpath( QFileInfo( targetAbsolute ).absolutePath() );
+	file_copy( sourceAbsolute.toUtf8().constData(), targetAbsolute.toUtf8().constData() );
+}
+
+bool AssetResolver_promptResolve( MissingAsset& missing, AssetRemapTable& remaps ){
+	if ( missing.candidates.empty() ) {
+		return false;
+	}
+	QDialog dialog( MainFrame_getWindow() );
+	dialog.setWindowTitle( "Asset auflösen" );
+	dialog.setMinimumSize( 760, 420 );
+	auto* layout = new QVBoxLayout( &dialog );
+	layout->addWidget( new QLabel( QString( "%1 fehlt: %2" ).arg( AssetKind_toString( missing.kind ), missing.requested.c_str() ) ) );
+	auto* list = new QListWidget;
+	for ( const CopiedString& candidate : missing.candidates )
+	{
+		list->addItem( candidate.c_str() );
+	}
+	list->setCurrentRow( 0 );
+	layout->addWidget( list, 1 );
+	auto* remember = new QCheckBox( "Remap-Regel speichern (alt → neu)" );
+	remember->setChecked( true );
+	layout->addWidget( remember );
+	auto* copyToProject = new QCheckBox( "Datei ins Projektziel kopieren" );
+	layout->addWidget( copyToProject );
+
+	auto* buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
+	buttons->button( QDialogButtonBox::Ok )->setText( "Referenzpfad ersetzen" );
+	layout->addWidget( buttons );
+	QObject::connect( buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept );
+	QObject::connect( buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject );
+	if ( dialog.exec() != QDialog::DialogCode::Accepted || !list->currentItem() ) {
+		return false;
+	}
+	const std::string selected = list->currentItem()->text().toStdString();
+	AssetResolver_applyReplacement( missing, selected.c_str(), copyToProject->isChecked() );
+	if ( remember->isChecked() ) {
+		remaps[missing.requested.c_str()] = selected;
+	}
+	return true;
+}
+
+std::vector<MissingAsset> AssetResolver_scanMissingAssets( bool applyRemaps ){
+	std::vector<AssetReference> refs;
+	refs.reserve( 256 );
+	AssetReferenceCollector collector( refs );
+	GlobalSceneGraph().traverse( collector );
+
+	const auto files = AssetResolver_collectVfsFiles();
+	AssetRemapTable textureRemaps = AssetResolver_loadRemaps( AssetKind::Texture );
+	AssetRemapTable modelRemaps = AssetResolver_loadRemaps( AssetKind::Model );
+	AssetRemapTable soundRemaps = AssetResolver_loadRemaps( AssetKind::Sound );
+
+	auto remapsFor = [&]( AssetKind kind ) -> AssetRemapTable& {
+		return kind == AssetKind::Texture ? textureRemaps : kind == AssetKind::Model ? modelRemaps : soundRemaps;
+	};
+
+	std::unordered_map<std::string, std::size_t> indexByKey;
+	std::vector<MissingAsset> missing;
+	for ( AssetReference& ref : refs )
+	{
+		if ( ref.kind == AssetKind::Texture && string_empty( path_get_extension( ref.value.c_str() ) ) ) {
+			continue; // most likely a shader name, not a direct file path
+		}
+
+		AssetRemapTable& remaps = remapsFor( ref.kind );
+		if ( const auto it = remaps.find( ref.value.c_str() ); it != remaps.end() ) {
+			if ( AssetResolver_existsInVfs( it->second.c_str() ) ) {
+				if ( applyRemaps ) {
+					ref.entity->setKeyValue( ref.key.c_str(), it->second.c_str() );
+				}
+				continue;
+			}
+		}
+		if ( AssetResolver_existsInVfs( ref.value.c_str() ) ) {
+			continue;
+		}
+		const std::string key = std::to_string( static_cast<int>( ref.kind ) ) + ":" + ref.value.c_str();
+		const auto found = indexByKey.find( key );
+		if ( found == indexByKey.end() ) {
+			MissingAsset item;
+			item.kind = ref.kind;
+			item.requested = ref.value;
+			item.candidates = AssetResolver_findCandidates( ref.kind, ref.value.c_str(), files );
+			item.refs.push_back( &ref );
+			indexByKey.emplace( key, missing.size() );
+			missing.push_back( item );
+		}
+		else{
+			missing[found->second].refs.push_back( &ref );
+		}
+	}
+
+	if ( applyRemaps ) {
+		AssetResolver_saveRemaps( AssetKind::Texture, textureRemaps );
+		AssetResolver_saveRemaps( AssetKind::Model, modelRemaps );
+		AssetResolver_saveRemaps( AssetKind::Sound, soundRemaps );
+	}
+	return missing;
+}
+
+void Q3RallyAssetResolver_OnMapLoadOrRefresh( const char* reason ){
+	auto missing = AssetResolver_scanMissingAssets( true );
+	if ( missing.empty() ) {
+		return;
+	}
+	AssetRemapTable textureRemaps = AssetResolver_loadRemaps( AssetKind::Texture );
+	AssetRemapTable modelRemaps = AssetResolver_loadRemaps( AssetKind::Model );
+	AssetRemapTable soundRemaps = AssetResolver_loadRemaps( AssetKind::Sound );
+	auto remapsFor = [&]( AssetKind kind ) -> AssetRemapTable& {
+		return kind == AssetKind::Texture ? textureRemaps : kind == AssetKind::Model ? modelRemaps : soundRemaps;
+	};
+
+	int resolved = 0;
+	for ( MissingAsset& item : missing )
+	{
+		resolved += AssetResolver_promptResolve( item, remapsFor( item.kind ) );
+	}
+	AssetResolver_saveRemaps( AssetKind::Texture, textureRemaps );
+	AssetResolver_saveRemaps( AssetKind::Model, modelRemaps );
+	AssetResolver_saveRemaps( AssetKind::Sound, soundRemaps );
+
+	const int unresolved = static_cast<int>( missing.size() ) - resolved;
+	if ( unresolved > 0 ) {
+		QMessageBox::warning( MainFrame_getWindow(), "Asset auflösen",
+			QString( "%1: %2 Asset(s) ungelöst. Details in Q3Rally Preflight vor dem Build." ).arg( reason ).arg( unresolved ) );
+	}
+}
+
 enum class RallyPreflightSeverity
 {
 	Error,
@@ -1510,6 +1863,21 @@ RallyPreflightReport RallyPreflight_run( const RallyPreflightOptions& options ){
 			constexpr float mapBoundsLimit = 131072.f;
 			if ( std::fabs( info.origin[0] ) > mapBoundsLimit || std::fabs( info.origin[1] ) > mapBoundsLimit || std::fabs( info.origin[2] ) > mapBoundsLimit ) {
 				RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, "Origin liegt weit außerhalb typischer Q3-Map-Grenzen.", &info );
+			}
+		}
+	}
+
+	{
+		const auto missingAssets = AssetResolver_scanMissingAssets( false );
+		if ( !missingAssets.empty() ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, QString( "Unaufgelöste Assets vor Build: %1" ).arg( missingAssets.size() ) );
+			for ( const MissingAsset& item : missingAssets )
+			{
+				RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning,
+					QString( "%1 fehlt: %2 (Referenzen: %3, Kandidaten: %4)" )
+						.arg( AssetKind_toString( item.kind ), item.requested.c_str() )
+						.arg( item.refs.size() )
+						.arg( item.candidates.size() ) );
 			}
 		}
 	}
@@ -2858,13 +3226,18 @@ void FocusAllViews(){
 	GlobalCamera_FocusOnSelected();
 }
 
+void RefreshReferencesAndResolveMissingAssets(){
+	RefreshReferences();
+	Q3RallyAssetResolver_OnMapLoadOrRefresh( "Refresh" );
+}
+
 #include "preferencesystem.h"
 #include "stringio.h"
 
 void MainFrame_Construct(){
 	GlobalCommands_insert( "OpenManual", makeCallbackF( OpenHelpURL ), QKeySequence( "F1" ) );
 
-	GlobalCommands_insert( "RefreshReferences", makeCallbackF( RefreshReferences ) );
+	GlobalCommands_insert( "RefreshReferences", makeCallbackF( RefreshReferencesAndResolveMissingAssets ) );
 	GlobalCommands_insert( "CheckForUpdate", makeCallbackF( OpenUpdateURL ) );
 	GlobalCommands_insert( "Exit", makeCallbackF( Exit ) );
 
