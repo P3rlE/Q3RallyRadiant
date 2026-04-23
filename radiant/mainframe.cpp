@@ -67,6 +67,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 
 #include "commandlib.h"
 #include "scenelib.h"
@@ -1714,8 +1715,7 @@ bool Q3RallyPreflight_AllowBuild(){
 	if ( errors > 0 ) {
 		globalErrorStream() << "Q3Rally preflight build-gate blockiert Build: " << errors << " Fehler, " << warnings << " Warnungen.\n";
 		const QString message = QString( "Build blockiert: Q3Rally Preflight meldet %1 Fehler.\nÖffne 'Misc > Q3Rally Preflight' für Details." ).arg( errors );
-		const auto msgLatin = message.toLatin1();
-		qt_MessageBox( MainFrame_getWindow(), msgLatin.constData(), "Q3Rally Build-Gate", EMessageBoxType::Warning );
+		QMessageBox::warning( MainFrame_getWindow(), "Q3Rally Build-Gate", message );
 		return false;
 	}
 	if ( warnings > 0 ) {
