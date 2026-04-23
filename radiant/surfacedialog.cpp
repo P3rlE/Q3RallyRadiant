@@ -43,6 +43,7 @@
 #include <QToolButton>
 #include <QGroupBox>
 #include <QCheckBox>
+#include <QComboBox>
 
 #include "signal/isignal.h"
 #include "math/vector.h"
@@ -107,8 +108,10 @@ class SurfaceInspector : public Dialog
 	QCheckBox* m_surfaceFlags[32];
 	QCheckBox* m_contentFlags[32];
 
-	NonModalEntry *m_valueEntry;
 public:
+	NonModalEntry *m_valueEntry;
+	QComboBox* m_presetCombo = nullptr;
+	QCheckBox* m_livePreviewToggle = nullptr;
 
 // Dialog Data
 	float m_fitHorizontal;
@@ -168,6 +171,56 @@ public:
 	void ApplyFlags();
 	typedef MemberCaller<SurfaceInspector, void(), &SurfaceInspector::ApplyFlags> ApplyFlagsCaller;
 };
+
+namespace
+{
+SurfaceInspector& getSurfaceInspector();
+
+struct TextureToolPreset
+{
+	const char* label;
+	float hShift;
+	float vShift;
+	float hScale;
+	float vScale;
+	float rotation;
+	float fitHorizontal;
+	float fitVertical;
+};
+
+constexpr TextureToolPreset g_textureToolPresets[] =
+{
+	{ "Road",    0.f, 0.f, 0.25f, 0.25f,   0.f, 1.f, 1.f },
+	{ "Terrain", 0.f, 0.f, 0.50f, 0.50f,   0.f, 2.f, 2.f },
+	{ "Decal",   0.f, 0.f, 1.00f, 1.00f,   0.f, 1.f, 1.f },
+};
+
+void SurfaceInspector_BatchApplySelection( const float* hShift, const float* vShift, const float* hScale, const float* vScale, const float* rotation ){
+	// shared path for face + patch updates:
+	// - brush/face texdef manipulation (brush_primit.cpp)
+	// - patch texture manipulation (patchmanip.cpp)
+	// - plugin/textool style shift/scale/rotate workflow integration
+	Select_SetTexdef( hShift, vShift, hScale, vScale, rotation );
+	Patch_SetTexdef( hShift, vShift, hScale, vScale, rotation );
+}
+
+void SurfaceInspector_ApplyCurrentValues( const char* commandName, bool fitAfterAssign = false ){
+	auto& inspector = getSurfaceInspector();
+	inspector.exportData();
+
+	const float hShift = inspector.m_hshiftIncrement.m_spin->value();
+	const float vShift = inspector.m_vshiftIncrement.m_spin->value();
+	const float hScale = inspector.m_hscaleIncrement.m_spin->value();
+	const float vScale = inspector.m_vscaleIncrement.m_spin->value();
+	const float rotation = inspector.m_rotateIncrement.m_spin->value();
+
+	UndoableCommand undo( commandName );
+	SurfaceInspector_BatchApplySelection( &hShift, &vShift, &hScale, &vScale, &rotation );
+	if ( fitAfterAssign ) {
+		Select_FitTexture( inspector.m_fitHorizontal, inspector.m_fitVertical );
+	}
+}
+}
 
 namespace
 {
@@ -463,6 +516,34 @@ void SurfaceInspector_FaceFitHeightOnly(){
 	UndoableCommand undo( "textureAutoFitHeightOnly" );
 	getSurfaceInspector().exportData();
 	Select_FitTexture( 0, getSurfaceInspector().m_fitVertical, true );
+}
+
+void SurfaceInspector_ApplyBatchFromDialog(){
+	SurfaceInspector_ApplyCurrentValues( "textureBatchApplySelection", false );
+}
+
+void SurfaceInspector_ApplyPresetFromDialog(){
+	auto& inspector = getSurfaceInspector();
+	if ( inspector.m_presetCombo == nullptr )
+		return;
+
+	const int idx = inspector.m_presetCombo->currentData().toInt();
+	constexpr int presetCount = static_cast<int>( sizeof( g_textureToolPresets ) / sizeof( g_textureToolPresets[0] ) );
+	if ( idx < 0 || idx >= presetCount )
+		return;
+
+	const TextureToolPreset& preset = g_textureToolPresets[idx];
+	inspector.m_hshiftIncrement.m_spin->setValue( preset.hShift );
+	inspector.m_vshiftIncrement.m_spin->setValue( preset.vShift );
+	inspector.m_hscaleIncrement.m_spin->setValue( preset.hScale );
+	inspector.m_vscaleIncrement.m_spin->setValue( preset.vScale );
+	inspector.m_rotateIncrement.m_spin->setValue( preset.rotation );
+	inspector.m_fitHorizontal = preset.fitHorizontal;
+	inspector.m_fitVertical = preset.fitVertical;
+
+	UndoableCommand undo( StringStream<64>( "texturePresetApply ", preset.label ) );
+	SurfaceInspector_BatchApplySelection( &preset.hShift, &preset.vShift, &preset.hScale, &preset.vScale, &preset.rotation );
+	Select_FitTexture( preset.fitHorizontal, preset.fitVertical );
 }
 
 class : public QObject
@@ -832,6 +913,38 @@ void SurfaceInspector::BuildDialog(){
 			if ( g_pGameDescription->mGameType == "doom3" ){
 				grid->addWidget( patch_tesselation_create(), 3, 2, 1, 2 );
 			}
+			{
+				grid->addWidget( new QLabel( "Preset:" ), 4, 0 );
+
+				auto* combo = new QComboBox;
+				constexpr int presetCount = static_cast<int>( sizeof( g_textureToolPresets ) / sizeof( g_textureToolPresets[0] ) );
+				for ( int i = 0; i < presetCount; ++i )
+					combo->addItem( g_textureToolPresets[i].label, i );
+				m_presetCombo = combo;
+				grid->addWidget( combo, 4, 1, 1, 2 );
+
+				auto* b = new QPushButton( "Apply Preset" );
+				b->setToolTip( "Apply preset to selected faces + patches, then run Fit." );
+				grid->addWidget( b, 4, 3 );
+				QObject::connect( b, &QAbstractButton::clicked, SurfaceInspector_ApplyPresetFromDialog );
+			}
+			{
+				auto* b = new QPushButton( "Batch Apply" );
+				b->setToolTip( "Batch-apply current Shift/Scale/Rotate to complete selection (multi-entity aware)." );
+				grid->addWidget( b, 5, 1, 1, 2 );
+				QObject::connect( b, &QAbstractButton::clicked, SurfaceInspector_ApplyBatchFromDialog );
+
+				auto* live = new QCheckBox( "Live Preview" );
+				live->setChecked( true );
+				live->setToolTip( "If enabled, spinner edits preview on faces and patches immediately (undoable)." );
+				m_livePreviewToggle = live;
+				grid->addWidget( live, 5, 3 );
+			}
+			{
+				auto* shortcutInfo = new QLabel( "Shortcut conflict note: FitTexture uses Ctrl+F (may overlap editor search)." );
+				shortcutInfo->setWordWrap( true );
+				grid->addWidget( shortcutInfo, 6, 0, 1, 4 );
+			}
 		}
 		if ( !string_empty( g_pGameDescription->getKeyValue( "si_flags" ) ) )
 		{
@@ -1039,43 +1152,48 @@ void SurfaceInspector::ApplyTexdef(){
 }
 #endif
 void SurfaceInspector::ApplyTexdef_HShift(){
+	if ( m_livePreviewToggle != nullptr && !m_livePreviewToggle->isChecked() )
+		return;
 	const float value = m_hshiftIncrement.m_spin->value();
 	const auto command = StringStream<64>( "textureProjectionSetSelected -hShift ", value );
 	UndoableCommand undo( command );
-	Select_SetTexdef( &value, 0, 0, 0, 0 );
-	Patch_SetTexdef( &value, 0, 0, 0, 0 );
+	SurfaceInspector_BatchApplySelection( &value, 0, 0, 0, 0 );
 }
 
 void SurfaceInspector::ApplyTexdef_VShift(){
+	if ( m_livePreviewToggle != nullptr && !m_livePreviewToggle->isChecked() )
+		return;
 	const float value = m_vshiftIncrement.m_spin->value();
 	const auto command = StringStream<64>( "textureProjectionSetSelected -vShift ", value );
 	UndoableCommand undo( command );
-	Select_SetTexdef( 0, &value, 0, 0, 0 );
-	Patch_SetTexdef( 0, &value, 0, 0, 0 );
+	SurfaceInspector_BatchApplySelection( 0, &value, 0, 0, 0 );
 }
 
 void SurfaceInspector::ApplyTexdef_HScale(){
+	if ( m_livePreviewToggle != nullptr && !m_livePreviewToggle->isChecked() )
+		return;
 	const float value = m_hscaleIncrement.m_spin->value();
 	const auto command = StringStream<64>( "textureProjectionSetSelected -hScale ", value );
 	UndoableCommand undo( command );
-	Select_SetTexdef( 0, 0, &value, 0, 0 );
-	Patch_SetTexdef( 0, 0, &value, 0, 0 );
+	SurfaceInspector_BatchApplySelection( 0, 0, &value, 0, 0 );
 }
 
 void SurfaceInspector::ApplyTexdef_VScale(){
+	if ( m_livePreviewToggle != nullptr && !m_livePreviewToggle->isChecked() )
+		return;
 	const float value = m_vscaleIncrement.m_spin->value();
 	const auto command = StringStream<64>( "textureProjectionSetSelected -vScale ", value );
 	UndoableCommand undo( command );
-	Select_SetTexdef( 0, 0, 0, &value, 0 );
-	Patch_SetTexdef( 0, 0, 0, &value, 0 );
+	SurfaceInspector_BatchApplySelection( 0, 0, 0, &value, 0 );
 }
 
 void SurfaceInspector::ApplyTexdef_Rotation(){
+	if ( m_livePreviewToggle != nullptr && !m_livePreviewToggle->isChecked() )
+		return;
 	const float value = m_rotateIncrement.m_spin->value();
 	const auto command = StringStream<64>( "textureProjectionSetSelected -rotation ", float_to_integer( value * 100.f ) / 100.f );
 	UndoableCommand undo( command );
-	Select_SetTexdef( 0, 0, 0, 0, &value );
-	Patch_SetTexdef( 0, 0, 0, 0, &value );
+	SurfaceInspector_BatchApplySelection( 0, 0, 0, 0, &value );
 }
 
 void SurfaceInspector::ApplyFlags(){
@@ -1752,6 +1870,8 @@ void SurfaceInspector_registerCommands(){
 	GlobalCommands_insert( "TextureProjectAxial", makeCallbackF( SurfaceInspector_ProjectTexture_eProjectAxial ) );
 	GlobalCommands_insert( "TextureProjectOrtho", makeCallbackF( SurfaceInspector_ProjectTexture_eProjectOrtho ) );
 	GlobalCommands_insert( "TextureProjectCam", makeCallbackF( SurfaceInspector_ProjectTexture_eProjectCam ) );
+	GlobalCommands_insert( "TextureBatchApplySelection", makeCallbackF( SurfaceInspector_ApplyBatchFromDialog ) );
+	GlobalCommands_insert( "TexturePresetApplySelection", makeCallbackF( SurfaceInspector_ApplyPresetFromDialog ) );
 	GlobalCommands_insert( "SurfaceInspector", makeCallbackF( SurfaceInspector_toggleShown ), QKeySequence( "S" ) );
 
 //	GlobalCommands_insert( "FaceCopyTexture", makeCallbackF( SelectedFaces_copyTexture ) );
@@ -1787,4 +1907,3 @@ void SurfaceInspector_Construct(){
 void SurfaceInspector_Destroy(){
 	delete g_SurfaceInspector;
 }
-
