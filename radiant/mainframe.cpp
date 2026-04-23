@@ -1032,6 +1032,7 @@ void create_view_menu( QMenuBar *menubar, MainFrame::EViewStyle style ){
 
 		create_check_menu_item_with_mnemonic( submenu, "Show 2D Size Info", "ShowSize2d" );
 		create_check_menu_item_with_mnemonic( submenu, "Show 3D Size Info", "ShowSize3d" );
+		create_menu_item_with_mnemonic( submenu, "Cycle Display Units", "CycleDisplayUnits" );
 		create_check_menu_item_with_mnemonic( submenu, "Show Crosshair", "ToggleCrosshairs" );
 		create_check_menu_item_with_mnemonic( submenu, "Show Grid", "ToggleGrid" );
 		create_check_menu_item_with_mnemonic( submenu, "Show Blocks", "ShowBlocks" );
