@@ -1249,7 +1249,13 @@ struct RallyPreflightReport
 
 namespace
 {
-const char* c_q3rallyPreflightSettingPrefix = "Q3RallyPreflight/";
+const char* c_q3rallyPreflightKeyRequiredEntities = "Q3RallyPreflight/requiredEntities";
+const char* c_q3rallyPreflightKeyRequiredKeysByClass = "Q3RallyPreflight/requiredKeysByClass";
+const char* c_q3rallyPreflightKeyOrderValidation = "Q3RallyPreflight/orderValidation";
+const char* c_q3rallyPreflightKeyOrderRangeValidation = "Q3RallyPreflight/orderRangeValidation";
+const char* c_q3rallyPreflightKeyTrackLogicValidation = "Q3RallyPreflight/trackLogicValidation";
+const char* c_q3rallyPreflightKeyOriginValidation = "Q3RallyPreflight/originValidation";
+const char* c_q3rallyPreflightKeyGateBuildOnErrors = "Q3RallyPreflight/gateBuildOnErrors";
 }
 
 class RallyEntityCollector : public scene::Graph::Walker
@@ -1570,7 +1576,8 @@ bool RallyPreflight_applyQuickFix( const RallyPreflightIssue& issue, RallyPrefli
 				}
 			}
 			UndoableCommand undo( "q3rallyPreflightAssignMissingOrder" );
-			issue.entity->entity->setKeyValue( "order", StringStream( maxOrder + 1 ) );
+			const auto orderText = QString::number( maxOrder + 1 ).toLatin1();
+			issue.entity->entity->setKeyValue( "order", orderText.constData() );
 			status = QString( "order=%1 gesetzt." ).arg( maxOrder + 1 );
 			return true;
 		}
@@ -1592,19 +1599,20 @@ bool RallyPreflight_applyQuickFix( const RallyPreflightIssue& issue, RallyPrefli
 					}
 					return a->entity < b->entity;
 				} );
-				UndoableCommand undo( "q3rallyPreflightRenumberDuplicateOrder" );
-				for ( std::size_t i = 0; i < classEntities.size(); ++i ) {
-					classEntities[i]->entity->setKeyValue( "order", StringStream( static_cast<int>( i + 1 ) ) );
-				}
-				status = QString( "%1: order neu von 1..%2 nummeriert." ).arg( issue.quickFixClassname.c_str() ).arg( classEntities.size() );
-				return true;
+					UndoableCommand undo( "q3rallyPreflightRenumberDuplicateOrder" );
+					for ( std::size_t i = 0; i < classEntities.size(); ++i ) {
+						const auto orderText = QString::number( static_cast<int>( i + 1 ) ).toLatin1();
+						classEntities[i]->entity->setKeyValue( "order", orderText.constData() );
+					}
+					status = QString( "%1: order neu von 1..%2 nummeriert." ).arg( issue.quickFixClassname.c_str() ).arg( classEntities.size() );
+					return true;
 			}
 		}
 		break;
 	case RallyQuickFixType::FixOriginSuggestion:
 		if ( issue.entity && !issue.quickFixSuggestion.isEmpty() ) {
 			UndoableCommand undo( "q3rallyPreflightFixOrigin" );
-			issue.entity->entity->setKeyValue( "origin", issue.quickFixSuggestion.toLatin1().constData() );
+				issue.entity->entity->setKeyValue( "origin", issue.quickFixSuggestion.toLatin1().constData() );
 				status = QString( "Origin auf \"%1\" gesetzt." ).arg( issue.quickFixSuggestion );
 			return true;
 		}
@@ -1673,25 +1681,25 @@ QJsonDocument RallyPreflight_buildJsonReport( const RallyPreflightReport& report
 RallyPreflightOptions RallyPreflight_loadOptions(){
 	QSettings settings;
 	RallyPreflightOptions options;
-	options.requiredEntities = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "requiredEntities" ), options.requiredEntities ).toBool();
-	options.requiredKeysByClass = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "requiredKeysByClass" ), options.requiredKeysByClass ).toBool();
-	options.orderValidation = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "orderValidation" ), options.orderValidation ).toBool();
-	options.orderRangeValidation = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "orderRangeValidation" ), options.orderRangeValidation ).toBool();
-	options.trackLogicValidation = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "trackLogicValidation" ), options.trackLogicValidation ).toBool();
-	options.originValidation = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "originValidation" ), options.originValidation ).toBool();
-	options.gateBuildOnErrors = settings.value( StringStream( c_q3rallyPreflightSettingPrefix, "gateBuildOnErrors" ), options.gateBuildOnErrors ).toBool();
+	options.requiredEntities = settings.value( c_q3rallyPreflightKeyRequiredEntities, options.requiredEntities ).toBool();
+	options.requiredKeysByClass = settings.value( c_q3rallyPreflightKeyRequiredKeysByClass, options.requiredKeysByClass ).toBool();
+	options.orderValidation = settings.value( c_q3rallyPreflightKeyOrderValidation, options.orderValidation ).toBool();
+	options.orderRangeValidation = settings.value( c_q3rallyPreflightKeyOrderRangeValidation, options.orderRangeValidation ).toBool();
+	options.trackLogicValidation = settings.value( c_q3rallyPreflightKeyTrackLogicValidation, options.trackLogicValidation ).toBool();
+	options.originValidation = settings.value( c_q3rallyPreflightKeyOriginValidation, options.originValidation ).toBool();
+	options.gateBuildOnErrors = settings.value( c_q3rallyPreflightKeyGateBuildOnErrors, options.gateBuildOnErrors ).toBool();
 	return options;
 }
 
 void RallyPreflight_saveOptions( const RallyPreflightOptions& options ){
 	QSettings settings;
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "requiredEntities" ), options.requiredEntities );
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "requiredKeysByClass" ), options.requiredKeysByClass );
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "orderValidation" ), options.orderValidation );
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "orderRangeValidation" ), options.orderRangeValidation );
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "trackLogicValidation" ), options.trackLogicValidation );
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "originValidation" ), options.originValidation );
-	settings.setValue( StringStream( c_q3rallyPreflightSettingPrefix, "gateBuildOnErrors" ), options.gateBuildOnErrors );
+	settings.setValue( c_q3rallyPreflightKeyRequiredEntities, options.requiredEntities );
+	settings.setValue( c_q3rallyPreflightKeyRequiredKeysByClass, options.requiredKeysByClass );
+	settings.setValue( c_q3rallyPreflightKeyOrderValidation, options.orderValidation );
+	settings.setValue( c_q3rallyPreflightKeyOrderRangeValidation, options.orderRangeValidation );
+	settings.setValue( c_q3rallyPreflightKeyTrackLogicValidation, options.trackLogicValidation );
+	settings.setValue( c_q3rallyPreflightKeyOriginValidation, options.originValidation );
+	settings.setValue( c_q3rallyPreflightKeyGateBuildOnErrors, options.gateBuildOnErrors );
 }
 
 bool Q3RallyPreflight_AllowBuild(){
@@ -1704,7 +1712,9 @@ bool Q3RallyPreflight_AllowBuild(){
 	RallyPreflight_collectSeverityCounts( report, errors, warnings, infos );
 	if ( errors > 0 ) {
 		globalErrorStream() << "Q3Rally preflight build-gate blockiert Build: " << errors << " Fehler, " << warnings << " Warnungen.\n";
-		qt_MessageBox( MainFrame_getWindow(), StringStream( "Build blockiert: Q3Rally Preflight meldet ", errors, " Fehler.\nÖffne 'Misc > Q3Rally Preflight' für Details." ), "Q3Rally Build-Gate", EMessageBoxType::Warning );
+		const QString message = QString( "Build blockiert: Q3Rally Preflight meldet %1 Fehler.\nÖffne 'Misc > Q3Rally Preflight' für Details." ).arg( errors );
+		const auto msgLatin = message.toLatin1();
+		qt_MessageBox( MainFrame_getWindow(), msgLatin.constData(), "Q3Rally Build-Gate", EMessageBoxType::Warning );
 		return false;
 	}
 	if ( warnings > 0 ) {
