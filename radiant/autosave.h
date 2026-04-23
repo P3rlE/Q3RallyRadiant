@@ -26,6 +26,10 @@ extern bool g_SnapShots_Enabled;
 void AutoSave_clear();
 void QE_CheckAutoSave();
 void Map_Snapshot();
+void Recovery_CreateSnapshot();
+void Recovery_MarkSessionStart();
+void Recovery_MarkSessionCleanShutdown();
+bool Recovery_CheckForUncleanShutdownAndPrompt();
 
 void Autosave_Construct();
 void Autosave_Destroy();
