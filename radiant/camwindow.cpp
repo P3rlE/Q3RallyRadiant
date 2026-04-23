@@ -55,6 +55,7 @@
 #include "xywindow.h"
 #include "windowobservers.h"
 #include "renderstate.h"
+#include "units.h"
 
 #include "timer.h"
 
@@ -1926,6 +1927,29 @@ void ShowSize3dToggle(){
 	}
 }
 
+void CycleDisplayUnits(){
+	switch ( getDisplayUnit() ) {
+	case DisplayUnit::QuakeUnits:
+		setDisplayUnit( DisplayUnit::Meters );
+		break;
+	case DisplayUnit::Meters:
+		setDisplayUnit( DisplayUnit::Miles );
+		break;
+	case DisplayUnit::Miles:
+	default:
+		setDisplayUnit( DisplayUnit::QuakeUnits );
+		break;
+	}
+
+	XY_UpdateAllWindows();
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+	else{
+		UpdateAllWindows();
+	}
+}
+
 void CamWnd::Cam_Draw(){
 //		globalOutputStream() << "Cam_Draw()\n";
 
@@ -2539,6 +2563,7 @@ void CamWnd_Construct(){
 	GlobalToggles_insert( "ShowStats", makeCallbackF( ShowStatsToggle ), ToggleItem::AddCallbackCaller( g_show_stats ) );
 	GlobalToggles_insert( "ShowWorkzone3d", makeCallbackF( ShowWorkzone3dToggle ), ToggleItem::AddCallbackCaller( g_show_workzone3d ) );
 	GlobalToggles_insert( "ShowSize3d", makeCallbackF( ShowSize3dToggle ), ToggleItem::AddCallbackCaller( g_show_size3d ) );
+	GlobalCommands_insert( "CycleDisplayUnits", makeCallbackF( CycleDisplayUnits ) );
 
 	GlobalPreferenceSystem().registerPreference( "ShowStats", BoolImportStringCaller( g_camwindow_globals.m_showStats ), BoolExportStringCaller( g_camwindow_globals.m_showStats ) );
 	GlobalPreferenceSystem().registerPreference( "ShowWorkzone3d", BoolImportStringCaller( g_camwindow_globals_private.m_bShowWorkzone ), BoolExportStringCaller( g_camwindow_globals_private.m_bShowWorkzone ) );
