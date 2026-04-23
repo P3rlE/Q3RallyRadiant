@@ -1021,6 +1021,7 @@ void Map_LoadFile( const char *filename ){
 
 	/* move the view to a start position */
 	Map_StartPosition();
+	Q3RallyAssetResolver_OnMapLoadOrRefresh( "Map-Load" );
 
 	g_currentMap = &g_map;
 
