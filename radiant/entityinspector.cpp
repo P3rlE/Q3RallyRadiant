@@ -31,6 +31,7 @@
 
 #include <map>
 #include <set>
+#include <algorithm>
 
 #include <gtkutil/guisettings.h>
 #include <QSplitter>
@@ -49,6 +50,12 @@
 #include <QKeyEvent>
 #include <QButtonGroup>
 #include <QToolTip>
+#include <QFile>
+#include <QTextStream>
+#include <QCompleter>
+#include <QStandardItemModel>
+#include <QBrush>
+#include <QColor>
 #include "gtkutil/combobox.h"
 
 #include "os/path.h"
@@ -81,6 +88,16 @@ namespace
 typedef std::map<CopiedString, CopiedString> KeyValues;
 KeyValues g_selectedKeyValues;
 KeyValues g_selectedDefaultKeyValues;
+
+struct EntityDefKeyInfo
+{
+	QString description;
+	QStringList typicalValues;
+};
+
+typedef QMap<QString, EntityDefKeyInfo> EntityDefKeyMap;
+typedef QMap<QString, EntityDefKeyMap> EntityDefClassMap;
+EntityDefClassMap g_entityDefInfo;
 }
 
 const char* SelectedEntity_getValueForKey( const char* key ){
@@ -746,6 +763,95 @@ QGridLayout* g_spawnflagsTable;
 QGridLayout* g_attributeBox = nullptr;
 typedef std::vector<EntityAttribute*> EntityAttributes;
 EntityAttributes g_entityAttributes;
+
+QCompleter* g_entityKeyCompleter = nullptr;
+QCompleter* g_entityValueCompleter = nullptr;
+QStandardItemModel* g_entityKeyCompleterModel = nullptr;
+QStandardItemModel* g_entityValueCompleterModel = nullptr;
+}
+
+QString EntityInspector_extractDefaultValueHint( const QString& text ){
+	static const QRegularExpression rx( "default\\s+([^\\),\\.]+)", QRegularExpression::PatternOption::CaseInsensitiveOption );
+	const auto match = rx.match( text );
+	return match.hasMatch() ? match.captured( 1 ).trimmed() : QString();
+}
+
+void EntityInspector_addValueHint( EntityDefKeyInfo& info, const QString& value ){
+	const auto trimmed = value.trimmed();
+	if( trimmed.isEmpty() )
+		return;
+	if( !info.typicalValues.contains( trimmed ) )
+		info.typicalValues.push_back( trimmed );
+}
+
+void EntityInspector_parseEntityDefFile( const QString& path ){
+	QFile file( path );
+	if( !file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+		return;
+
+	QString currentClass;
+	bool inBlock = false;
+	bool inKeysSection = false;
+	QTextStream stream( &file );
+	while( !stream.atEnd() ){
+		const QString line = stream.readLine().trimmed();
+		if( line.startsWith( "/*QUAKED ", Qt::CaseInsensitive ) ){
+			const auto parts = line.split( QRegularExpression( "\\s+" ), Qt::SplitBehaviorFlags::SkipEmptyParts );
+			currentClass = parts.size() > 1 ? parts[1] : QString();
+			inBlock = true;
+			inKeysSection = false;
+			continue;
+		}
+		if( !inBlock )
+			continue;
+		if( line.startsWith( "*/" ) ){
+			inBlock = false;
+			inKeysSection = false;
+			currentClass.clear();
+			continue;
+		}
+		if( line.contains( "-------- KEYS --------", Qt::CaseInsensitive ) ){
+			inKeysSection = true;
+			continue;
+		}
+		if( line.startsWith( "-------- " ) ){
+			inKeysSection = false;
+			continue;
+		}
+		if( !inKeysSection || currentClass.isEmpty() || !line.contains( ':' ) )
+			continue;
+
+		const int split = line.indexOf( ':' );
+		QString key = line.left( split ).trimmed();
+		key.remove( '"' );
+		key.remove( '\'' );
+		if( key.isEmpty() )
+			continue;
+		const QString desc = line.mid( split + 1 ).trimmed();
+		EntityDefKeyInfo& info = g_entityDefInfo[currentClass][key];
+		if( info.description.isEmpty() && !desc.isEmpty() )
+			info.description = desc;
+		EntityInspector_addValueHint( info, EntityInspector_extractDefaultValueHint( desc ) );
+	}
+}
+
+void EntityInspector_loadEntityDefHints(){
+	g_entityDefInfo.clear();
+	const QString gameToolsPath = GlobalRadiant().getGameToolsPath();
+	const QString baseGame = GlobalRadiant().getRequiredGameDescriptionKeyValue( "basegame" );
+	const QString gameName = GlobalRadiant().getGameName();
+	const QString basePath = QString( "%1%2/entities.def" ).arg( gameToolsPath, baseGame );
+	const QString gamePath = QString( "%1%2/entities.def" ).arg( gameToolsPath, gameName );
+	EntityInspector_parseEntityDefFile( basePath );
+	if( QString::compare( basePath, gamePath, Qt::CaseInsensitive ) != 0 )
+		EntityInspector_parseEntityDefFile( gamePath );
+
+	const QString customFromGameDef = GlobalRadiant().getGameDescriptionKeyValue( "entityinspector_custom_entities_def" );
+	if( !customFromGameDef.isEmpty() )
+		EntityInspector_parseEntityDefFile( QString( "%1%2" ).arg( gameToolsPath, customFromGameDef ) );
+	else{
+		EntityInspector_parseEntityDefFile( QString( "%1%2/entities_custom.def" ).arg( gameToolsPath, gameName ) );
+	}
 }
 
 void GlobalEntityAttributes_clear(){
@@ -809,6 +915,104 @@ const char* keyvalues_valueforkey( KeyValues& keyvalues, const char* key ){
 		return ( *i ).second.c_str();
 	}
 	return "";
+}
+
+bool EntityInspector_isKnownKeyForCurrentClass( const QString& key ){
+	if( key.isEmpty() )
+		return true;
+	if( g_current_attributes != nullptr ){
+		for ( const auto& [ entityKey, attr ] : g_current_attributes->m_attributes )
+		{
+			if( key.compare( entityKey.c_str(), Qt::CaseInsensitive ) == 0 )
+				return true;
+		}
+	}
+	const QString classname = keyvalues_valueforkey( g_selectedKeyValues, "classname" );
+	const auto classIt = g_entityDefInfo.constFind( classname );
+	return classIt != g_entityDefInfo.constEnd() && classIt->contains( key );
+}
+
+void EntityInspector_updateKeyWarningState(){
+	if( g_entityKeyEntry == nullptr )
+		return;
+	const QString key = g_entityKeyEntry->text().trimmed();
+	if( key.isEmpty() || EntityInspector_isKnownKeyForCurrentClass( key ) ){
+		g_entityKeyEntry->setStyleSheet( "" );
+		g_entityKeyEntry->setToolTip( "" );
+		return;
+	}
+	g_entityKeyEntry->setStyleSheet( "QLineEdit { background-color: #3a1f1f; border: 1px solid #e3a100; }" );
+	g_entityKeyEntry->setToolTip( "Unbekannter Key für diese Klasse (Legacy-Maps bleiben erlaubt)." );
+}
+
+void EntityInspector_refreshSuggestionModels(){
+	if( g_entityKeyCompleterModel == nullptr || g_entityValueCompleterModel == nullptr )
+		return;
+
+	g_entityKeyCompleterModel->clear();
+	g_entityValueCompleterModel->clear();
+
+	const QString classname = keyvalues_valueforkey( g_selectedKeyValues, "classname" );
+	const auto classIt = g_entityDefInfo.constFind( classname );
+
+	struct ScoredKey{
+		QString key;
+		QString description;
+		int score;
+	};
+	QVector<ScoredKey> scoredKeys;
+
+	if( g_current_attributes != nullptr ){
+		for ( const auto& [ key, attr ] : g_current_attributes->m_attributes )
+		{
+			const QString qKey = key.c_str();
+			int score = 200;
+			if( g_selectedKeyValues.find( key ) != g_selectedKeyValues.end() )
+				score += 100;
+			scoredKeys.push_back( { qKey, attr.m_description.c_str(), score } );
+		}
+	}
+	if( classIt != g_entityDefInfo.constEnd() ){
+		for( auto it = classIt->cbegin(); it != classIt->cend(); ++it ){
+			int score = 120;
+			if( g_selectedKeyValues.find( it.key().toLatin1().constData() ) != g_selectedKeyValues.end() )
+				score += 100;
+			const auto found = std::find_if( scoredKeys.cbegin(), scoredKeys.cend(), [&]( const ScoredKey& item ){ return item.key == it.key(); } );
+			if( found == scoredKeys.cend() ){
+				scoredKeys.push_back( { it.key(), it.value().description, score } );
+			}
+		}
+	}
+
+	std::sort( scoredKeys.begin(), scoredKeys.end(), []( const ScoredKey& a, const ScoredKey& b ){
+		if( a.score != b.score )
+			return a.score > b.score;
+		return a.key.compare( b.key, Qt::CaseInsensitive ) < 0;
+	} );
+
+	for( const ScoredKey& key : scoredKeys ){
+		auto *item = new QStandardItem( key.description.isEmpty()
+			? key.key
+			: QString( "%1 — %2" ).arg( key.key, key.description ) );
+		item->setData( key.key, Qt::ItemDataRole::UserRole );
+		g_entityKeyCompleterModel->appendRow( item );
+	}
+
+	const QString selectedKey = g_entityKeyEntry != nullptr ? g_entityKeyEntry->text().trimmed() : QString();
+	if( !selectedKey.isEmpty() ){
+		if( classIt != g_entityDefInfo.constEnd() ){
+			const auto keyIt = classIt->constFind( selectedKey );
+			if( keyIt != classIt->constEnd() ){
+				for( const QString& value : keyIt->typicalValues ){
+					auto *item = new QStandardItem( keyIt->description.isEmpty()
+						? value
+						: QString( "%1 — %2" ).arg( value, keyIt->description ) );
+					item->setData( value, Qt::ItemDataRole::UserRole );
+					g_entityValueCompleterModel->appendRow( item );
+				}
+			}
+		}
+	}
 }
 
 // required to store EntityClass* in QVariant
@@ -1044,13 +1248,20 @@ void EntityInspector_updateKeyValues(){
 	// Walk through list and add pairs
 	for ( const auto&[ key, value ] : g_selectedKeyValues )
 	{
-		g_entprops_store->addTopLevelItem( new QTreeWidgetItem( { key.c_str(), value.c_str() } ) );
+		auto *item = new QTreeWidgetItem( { key.c_str(), value.c_str() } );
+		if( !EntityInspector_isKnownKeyForCurrentClass( key.c_str() ) ){
+			item->setForeground( 0, QBrush( QColor( "#e3a100" ) ) );
+			item->setToolTip( 0, "Unbekannter Key für diese Klasse (Legacy-Maps bleiben erlaubt)." );
+		}
+		g_entprops_store->addTopLevelItem( item );
 	}
 
 	for ( EntityAttribute *attr : g_entityAttributes )
 	{
 		attr->update();
 	}
+	EntityInspector_refreshSuggestionModels();
+	EntityInspector_updateKeyWarningState();
 }
 
 class EntityInspectorDraw
@@ -1152,6 +1363,8 @@ static void EntityProperties_selection_changed( QTreeWidgetItem *item, int colum
 	if( item != nullptr ){
 		g_entityKeyEntry->setText( item->text( 0 ) );
 		g_entityValueEntry->setText( item->text( 1 ) );
+		EntityInspector_refreshSuggestionModels();
+		EntityInspector_updateKeyWarningState();
 	}
 }
 
@@ -1188,6 +1401,10 @@ g_pressedKeysFilter;
 void EntityInspector_destroyWindow(){
 	g_entityInspector_windowConstructed = false;
 	GlobalEntityAttributes_clear();
+	g_entityKeyCompleter = nullptr;
+	g_entityValueCompleter = nullptr;
+	g_entityKeyCompleterModel = nullptr;
+	g_entityValueCompleterModel = nullptr;
 }
 
 QWidget* EntityInspector_constructWindow( QWidget* toplevel ){
@@ -1275,6 +1492,20 @@ QWidget* EntityInspector_constructWindow( QWidget* toplevel ){
 				grid->addWidget( line, 0, 1 );
 				QObject::connect( line, &QLineEdit::returnPressed, [](){ g_entityValueEntry->setFocus(); g_entityValueEntry->selectAll(); } );
 				line->setValidator( new KeyNameValidator( line ) );
+				g_entityKeyCompleterModel = new QStandardItemModel( line );
+				g_entityKeyCompleter = new QCompleter( g_entityKeyCompleterModel, line );
+				g_entityKeyCompleter->setCaseSensitivity( Qt::CaseInsensitive );
+				g_entityKeyCompleter->setFilterMode( Qt::MatchFlag::MatchContains );
+				g_entityKeyCompleter->setCompletionRole( Qt::ItemDataRole::UserRole );
+				line->setCompleter( g_entityKeyCompleter );
+				QObject::connect( g_entityKeyCompleter, QOverload<const QString&>::of( &QCompleter::activated ), []( const QString& ){
+					EntityInspector_refreshSuggestionModels();
+					EntityInspector_updateKeyWarningState();
+				} );
+				QObject::connect( line, &QLineEdit::textEdited, []( const QString& ){
+					EntityInspector_refreshSuggestionModels();
+					EntityInspector_updateKeyWarningState();
+				} );
 			}
 
 			{
@@ -1282,6 +1513,12 @@ QWidget* EntityInspector_constructWindow( QWidget* toplevel ){
 				grid->addWidget( line, 1, 1 );
 				QObject::connect( line, &QLineEdit::returnPressed, [](){ EntityInspector_applyKeyValue(); } );
 				line->setValidator( new KeyValueValidator( line ) );
+				g_entityValueCompleterModel = new QStandardItemModel( line );
+				g_entityValueCompleter = new QCompleter( g_entityValueCompleterModel, line );
+				g_entityValueCompleter->setCaseSensitivity( Qt::CaseInsensitive );
+				g_entityValueCompleter->setFilterMode( Qt::MatchFlag::MatchContains );
+				g_entityValueCompleter->setCompletionRole( Qt::ItemDataRole::UserRole );
+				line->setCompleter( g_entityValueCompleter );
 			}
 			/* select by key/value buttons */
 			{
@@ -1373,6 +1610,7 @@ QWidget* EntityInspector_constructWindow( QWidget* toplevel ){
 	}
 
 	g_entityInspector_windowConstructed = true;
+	EntityInspector_loadEntityDefHints();
 	EntityClassList_fill();
 
 	typedef FreeCaller<void(const Selectable&), EntityInspector_selectionChanged> EntityInspectorSelectionChangedCaller;
