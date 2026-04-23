@@ -32,6 +32,7 @@
 #include "product.h"
 
 #include "ifilesystem.h"
+#include "iarchive.h"
 #include "ientity.h"
 #include "iundo.h"
 #include "ishaders.h"
@@ -1235,7 +1236,7 @@ CopiedString AssetResolver_projectKey(){
 	if ( string_empty( name ) ) {
 		return "unnamed";
 	}
-	return PathCleaned( name );
+	return PathCleaned( name ).c_str();
 }
 
 CopiedString AssetResolver_remapSettingsKey( AssetKind kind ){
@@ -1310,7 +1311,7 @@ public:
 				else{
 					return;
 				}
-				m_refs.push_back( { m_entity, kind, key, PathCleaned( value ) } );
+				m_refs.push_back( { m_entity, kind, key, PathCleaned( value ).c_str() } );
 			}
 		} keys( ent, m_refs );
 		ent->forEachKeyValue( keys );
@@ -1326,7 +1327,7 @@ std::vector<CopiedString> AssetResolver_collectVfsFiles(){
 		}
 		void visit( const char* name ) override {
 			if ( !string_empty( name ) ) {
-				files.insert( PathCleaned( name ) );
+				files.insert( PathCleaned( name ).c_str() );
 			}
 		}
 	};
