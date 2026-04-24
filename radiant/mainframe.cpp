@@ -705,8 +705,10 @@ void Restart(){
 }
 
 
+#define RADIANT_PROJECT_GITHUB_BASE_URL "https://github.com/Q3Rally-Team/Q3RallyRadiant"
+
 void OpenUpdateURL(){
-	OpenURL( "https://github.com/Garux/netradiant-custom/releases/latest?product=" RADIANT_UPDATE_PRODUCT_PARAM "&version=" RADIANT_VERSION );
+	OpenURL( RADIANT_PROJECT_GITHUB_BASE_URL "/releases/latest?product=" RADIANT_UPDATE_PRODUCT_PARAM "&version=" RADIANT_VERSION );
 #if 0
 	// build the URL
 	StringOutputStream URL( 256 );
@@ -733,7 +735,7 @@ void OpenHelpURL(){
 
 void OpenBugReportURL(){
 	// OpenURL( "http://www.icculus.org/netradiant/?cmd=bugs" );
-	OpenURL( "https://github.com/Garux/netradiant-custom/issues" );
+	OpenURL( RADIANT_PROJECT_GITHUB_BASE_URL "/issues" );
 }
 
 
