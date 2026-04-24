@@ -44,6 +44,7 @@
 #include "mainframe.h"
 #include "gtkdlgs.h"
 #include "theme.h"
+#include "product.h"
 
 #include <QCoreApplication>
 #include <QGridLayout>
@@ -581,7 +582,7 @@ public:
 void PrefsDlg::BuildDialog(){
 	PreferencesDialog_addInterfacePreferences( makeCallbackF( Interface_constructPreferences ) );
 
-	GetWidget()->setWindowTitle( "NetRadiant Preferences" );
+	GetWidget()->setWindowTitle( RADIANT_PRODUCT_NAME " Preferences" );
 
 	{
 		auto *grid = new QGridLayout( GetWidget() );
