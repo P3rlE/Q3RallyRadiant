@@ -29,6 +29,8 @@
 #include "os/file.h"
 #include "commandlib.h"
 
+#include <filesystem>
+
 int g_argc;
 const char** g_argv;
 
@@ -193,6 +195,45 @@ bool portable_app_setup(){
 	return false;
 }
 
+namespace
+{
+bool migrate_legacy_settings_path( const char* legacyPath, const char* q3rallyPath, const char* legacyLabel ){
+	if ( file_exists( q3rallyPath ) ) {
+		return true;
+	}
+
+	if ( !file_exists( legacyPath ) ) {
+		return false;
+	}
+
+	// Legacy migration fallback: old NetRadiant defaults are imported once,
+	// then Q3RallyRadiant keeps using the new q3rally-specific settings path.
+	globalOutputStream() << "Legacy migration fallback: importing settings from "
+	                     << legacyLabel << " (" << legacyPath << ") to " << q3rallyPath << '\n';
+
+	std::error_code err;
+	std::filesystem::create_directories( q3rallyPath, err );
+	if ( err ) {
+		globalWarningStream() << "Legacy migration fallback failed to create " << q3rallyPath
+		                      << ": " << err.message().c_str() << '\n';
+		return false;
+	}
+
+	std::filesystem::copy(
+		legacyPath,
+		q3rallyPath,
+		std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing,
+		err );
+	if ( err ) {
+		globalWarningStream() << "Legacy migration fallback failed while importing from "
+		                      << legacyPath << ": " << err.message().c_str() << '\n';
+		return false;
+	}
+
+	return true;
+}
+}
+
 
 CopiedString g_openMapByCmd;
 
@@ -260,7 +301,19 @@ void environment_init( int argc, char* argv[] ){
 	}
 
 	if ( !portable_app_setup() ) {
-		home_path = StringStream( DirectoryCleaned( g_get_home_dir() ), ".netradiant/" );
+		const auto userHome = DirectoryCleaned( g_get_home_dir() );
+		const auto q3rallyHomePath = StringStream( userHome, ".q3rallyradiant/" );
+		// Legacy migration fallback: ".netradiant/" is the historical NetRadiant settings root.
+		const auto legacyHomePath = StringStream( userHome, ".netradiant/" );
+
+		if ( !migrate_legacy_settings_path( legacyHomePath.c_str(), q3rallyHomePath.c_str(), ".netradiant/" ) && file_exists( legacyHomePath.c_str() ) ) {
+			globalWarningStream() << "Using legacy settings path " << legacyHomePath.c_str()
+			                      << " as a migration fallback; please migrate to " << q3rallyHomePath.c_str() << '\n';
+			home_path = legacyHomePath;
+		}
+		else{
+			home_path = q3rallyHomePath;
+		}
 		Q_mkdir( home_path.c_str() );
 	}
 	gamedetect();
@@ -286,18 +339,31 @@ void environment_init( int argc, char* argv[] ){
 	if ( !portable_app_setup() ) {
 		char *appdata = getenv( "APPDATA" );
 		StringOutputStream home( 256 );
+		StringOutputStream legacyHome( 256 );
 		if ( !appdata || string_empty( appdata ) ) {
 			ERROR_MESSAGE( "Application Data folder not available.\n"
 			               "Radiant will use C:\\ for user preferences.\n" );
 			home << "C:";
+			legacyHome << "C:";
 		}
 		else
 		{
 			home << PathCleaned( appdata );
+			legacyHome << PathCleaned( appdata );
 		}
-		home << "/NetRadiantSettings/";
-		Q_mkdir( home );
-		home_path = home;
+		home << "/Q3RallyRadiantSettings/";
+		// Legacy migration fallback: "NetRadiantSettings/" is the historical NetRadiant settings root.
+		legacyHome << "/NetRadiantSettings/";
+
+		if ( !migrate_legacy_settings_path( legacyHome.c_str(), home.c_str(), "NetRadiantSettings/" ) && file_exists( legacyHome.c_str() ) ) {
+			globalWarningStream() << "Using legacy settings path " << legacyHome.c_str()
+			                      << " as a migration fallback; please migrate to " << home.c_str() << '\n';
+			home_path = legacyHome;
+		}
+		else{
+			home_path = home;
+		}
+		Q_mkdir( home_path.c_str() );
 	}
 	gamedetect();
 	cmdMap();
