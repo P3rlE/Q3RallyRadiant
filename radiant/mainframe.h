@@ -248,3 +248,5 @@ void XYWindowMouseDown_disconnect( MouseEventHandlerId id );
 extern QWidget* g_page_entity;
 
 void FocusAllViews();
+bool Q3RallyPreflight_AllowBuild();
+void Q3RallyAssetResolver_OnMapLoadOrRefresh( const char* reason );

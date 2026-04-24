@@ -93,6 +93,7 @@
 #include "referencecache.h"
 #include "stacktrace.h"
 #include "error.h"
+#include "autosave.h"
 
 #include <QApplication>
 #include "gtkutil/glwidget.h"
@@ -521,6 +522,7 @@ int main( int argc, char* argv[] ){
 	g_Preferences.Init(); // must occur before create_local_pid() to allow preferences to be reset
 
 	create_local_pid();
+	Recovery_MarkSessionStart();
 
 	Radiant_Initialise();
 
@@ -538,7 +540,11 @@ int main( int argc, char* argv[] ){
 
 	hide_splash();
 
-	if( !g_openMapByCmd.empty() ){
+	const bool recoveredFromSnapshot = Recovery_CheckForUncleanShutdownAndPrompt();
+	if ( recoveredFromSnapshot ) {
+		// Recovery already loaded a selected snapshot.
+	}
+	else if( !g_openMapByCmd.empty() ){
 		Map_LoadFile( g_openMapByCmd.c_str() );
 	}
 	else if ( g_bLoadLastMap && !g_strLastMap.empty() ) {
@@ -564,6 +570,7 @@ int main( int argc, char* argv[] ){
 //	user_shortcuts_save();
 
 	Radiant_Shutdown();
+	Recovery_MarkSessionCleanShutdown();
 
 	qInstallMessageHandler( nullptr );
 	// close the log file if any

@@ -1051,10 +1051,11 @@ void XYWnd::XY_MouseMoved( int x, int y, unsigned int buttons ){
 		m_window_observer->onMouseMotion( WindowVector( x, y ), modifiers_for_flags( buttons ) );
 
 		{
+			const int decimals = displayUnitDefaultDecimals();
 			const auto status = StringStream<128>(
-				"x:: ", formatDisplayValue( m_mousePosition[0], 1 ).c_str(),
-				"  y:: ", formatDisplayValue( m_mousePosition[1], 1 ).c_str(),
-				"  z:: ", formatDisplayValue( m_mousePosition[2], 1 ).c_str(),
+				"x:: ", formatDisplayValue( m_mousePosition[0], decimals ).c_str(),
+				"  y:: ", formatDisplayValue( m_mousePosition[1], decimals ).c_str(),
+				"  z:: ", formatDisplayValue( m_mousePosition[2], decimals ).c_str(),
 				" ", CopiedString( displayUnitSuffix() )
 			);
 			g_pParentWnd->SetStatusText( c_status_position, status );
@@ -1597,6 +1598,7 @@ void XYWnd::PaintSizeInfo( const int nDim1, const int nDim2 ){
 	const Vector3 max = bounds.origin + bounds.extents;
 	const Vector3 mid = bounds.origin;
 	const Vector3 size = bounds.extents * 2;
+	const int decimals = displayUnitDefaultDecimals();
 
 	const char* dimStrings[] = {"x:", "y:", "z:"};
 
@@ -1635,17 +1637,20 @@ void XYWnd::PaintSizeInfo( const int nDim1, const int nDim2 ){
 	v[nDim1] = mid[nDim1];
 	v[nDim2] = min[nDim2] - ( 10 + 2 + fontHeight ) / m_fScale;
 	gl().glRasterPos3fv( vector3_to_array( v ) );
-	GlobalOpenGL().drawString( dimensions( dimStrings[nDim1], size[nDim1] ) );
+	GlobalOpenGL().drawString( dimensions( dimStrings[nDim1], formatDisplayValue( size[nDim1], decimals ).c_str(), " ", displayUnitSuffix() ) );
 
 	v[nDim1] = max[nDim1] + 16.f / m_fScale;
 	v[nDim2] = mid[nDim2] - fontHeight / m_fScale / 2;
 	gl().glRasterPos3fv( vector3_to_array( v ) );
-	GlobalOpenGL().drawString( dimensions( dimStrings[nDim2], size[nDim2] ) );
+	GlobalOpenGL().drawString( dimensions( dimStrings[nDim2], formatDisplayValue( size[nDim2], decimals ).c_str(), " ", displayUnitSuffix() ) );
 
 	v[nDim1] = min[nDim1] + 4.f / m_fScale;
 	v[nDim2] = max[nDim2] + 5.f / m_fScale;
 	gl().glRasterPos3fv( vector3_to_array( v ) );
-	GlobalOpenGL().drawString( dimensions( '(', dimStrings[nDim1], min[nDim1], "  ", dimStrings[nDim2], max[nDim2], ')' ) );
+	GlobalOpenGL().drawString( dimensions(
+		'(', dimStrings[nDim1], formatDisplayValue( min[nDim1], decimals ).c_str(), " ", displayUnitSuffix(),
+		"  ", dimStrings[nDim2], formatDisplayValue( max[nDim2], decimals ).c_str(), " ", displayUnitSuffix(), ')'
+	) );
 }
 
 class XYRenderer : public Renderer

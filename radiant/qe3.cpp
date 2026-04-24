@@ -353,6 +353,10 @@ bool BuildRunDialog( const std::vector<CopiedString>& baseCommands, std::vector<
 }
 
 void RunBSP( size_t buildIdx ){
+	if ( !Q3RallyPreflight_AllowBuild() ) {
+		return;
+	}
+
 	if( !g_region_active )
 		SaveMap();
 

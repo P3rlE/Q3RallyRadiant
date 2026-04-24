@@ -21,3 +21,4 @@ double quakeToDisplay( double qu );
 const char* displayUnitSuffix();
 CopiedString formatDisplayValue( double qu, int decimals );
 CopiedString formatDisplayTriplet( const Vector3& qu, int decimals = 1 );
+int displayUnitDefaultDecimals();
