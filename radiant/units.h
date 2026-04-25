@@ -6,7 +6,7 @@
 enum class DisplayUnit {
 	QuakeUnits = 0,
 	Meters = 1,
-	Miles = 2,
+	Inches = 2,
 };
 
 extern double meters_per_quake_unit;

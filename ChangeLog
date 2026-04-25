@@ -1,3 +1,6 @@
+2026-04-25 Codex GPT-5.3-Codex
+	* radiant: replace display unit "Miles" with "Inches" in unit cycling and size readouts
+
 2009-04-26 Rudolf Polzer divVerent(at)alientrap.org
 	* q3map2: minimap generation for Nexuiz
 	* q3map2: better progress indicators
