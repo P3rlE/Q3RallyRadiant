@@ -90,11 +90,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Generate Q3Rally splash
-        run: |
-          pip install cairosvg --quiet --break-system-packages 2>/dev/null || pip install cairosvg --quiet
-          python3 tools/make_splash.py
-
       - name: Build
         run: |
           set -euxo pipefail
