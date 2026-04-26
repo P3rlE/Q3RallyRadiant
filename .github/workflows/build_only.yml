@@ -49,12 +49,11 @@ jobs:
         run: |
           make MAKEFILE_CONF=msys2-Makefile.conf -j4
           mkdir -p install/settings
-          7z a netradiant-custom-windows-${{ matrix.arch }}.zip ./install/*
 
       - uses: actions/upload-artifact@v6
         with:
-          name: windows-${{ matrix.arch }}
-          path: netradiant-custom-windows-${{ matrix.arch }}.zip
+          name: q3rallyradiant-windows-${{ matrix.arch }}
+          path: ./install/
           if-no-files-found: error
 
   linux:
@@ -91,6 +90,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Generate Q3Rally splash
+        run: |
+          pip install cairosvg --quiet --break-system-packages 2>/dev/null || pip install cairosvg --quiet
+          python3 tools/make_splash.py
+
       - name: Build
         run: |
           set -euxo pipefail
@@ -110,10 +114,10 @@ jobs:
             exit 1
           fi
 
-          7z a netradiant-custom-linux-${{ matrix.arch }}.7z "${APPIMAGE_PATH}"
+          7z a q3rallyradiant-linux-${{ matrix.arch }}.7z "${APPIMAGE_PATH}"
 
       - uses: actions/upload-artifact@v6
         with:
-          name: linux-${{ matrix.arch }}
-          path: netradiant-custom-linux-${{ matrix.arch }}.7z
+          name: q3rallyradiant-linux-${{ matrix.arch }}
+          path: q3rallyradiant-linux-${{ matrix.arch }}.7z
           if-no-files-found: error

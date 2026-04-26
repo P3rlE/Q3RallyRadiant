@@ -308,7 +308,13 @@ static StringOutputStream runEngineCmd( const char *bspName ){
 		return std::pair( g_engineExecutable.string(), g_engineArgs.string() );
 	}();
 
-	auto cmd = StringStream( '"', EnginePath_get(), exe, '"', ' ' );
+	// If exe is already an absolute path, use it directly; otherwise prepend EnginePath
+	StringOutputStream exePath( 256 );
+	if( path_is_absolute( exe.c_str() ) )
+		exePath << exe;
+	else
+		exePath << EnginePath_get() << exe;
+	auto cmd = StringStream( '"', exePath.c_str(), '"', ' ' );
 	{ // substitute "%mapname%"
 		const char *a = args.c_str();
 		while( const char *map = strstr( a, "%mapname%" ) ){
