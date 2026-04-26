@@ -361,7 +361,7 @@ void BuildMonitor_SetRunAfterCompile( bool enabled ){
 static void Build_exportRunAfterCompile( const BoolImportCallback& callback ){
 	callback( g_WatchBSP_RunQuake );
 }
-ToggleItem g_runAfterCompile_item( FreeCaller<void(const BoolImportCallback&), Build_exportRunAfterCompile>() );
+ToggleItem g_runAfterCompile_item{ FreeCaller<void(const BoolImportCallback&), Build_exportRunAfterCompile>() };
 
 void Build_ToggleRunAfterCompile(){
 	BuildMonitor_SetRunAfterCompile( !g_WatchBSP_RunQuake );
