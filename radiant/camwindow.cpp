@@ -1937,9 +1937,9 @@ void CycleDisplayUnits(){
 		setDisplayUnit( DisplayUnit::Meters );
 		break;
 	case DisplayUnit::Meters:
-		setDisplayUnit( DisplayUnit::Miles );
+		setDisplayUnit( DisplayUnit::Inches );
 		break;
-	case DisplayUnit::Miles:
+	case DisplayUnit::Inches:
 	default:
 		setDisplayUnit( DisplayUnit::QuakeUnits );
 		break;

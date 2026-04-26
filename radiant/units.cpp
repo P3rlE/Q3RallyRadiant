@@ -7,7 +7,18 @@ double meters_per_quake_unit = 0.0254;
 
 namespace {
 DisplayUnit g_displayUnit = DisplayUnit::QuakeUnits;
-constexpr double meters_per_mile = 1609.344;
+constexpr double meters_per_inch = 0.0254;
+
+DisplayUnit sanitizeDisplayUnit( DisplayUnit displayUnit ){
+	switch ( displayUnit ) {
+	case DisplayUnit::QuakeUnits:
+	case DisplayUnit::Meters:
+	case DisplayUnit::Inches:
+		return displayUnit;
+	default:
+		return DisplayUnit::QuakeUnits;
+	}
+}
 
 CopiedString formatFixed( double value, int decimals ){
 	if ( decimals < 0 ) {
@@ -25,7 +36,7 @@ DisplayUnit getDisplayUnit(){
 }
 
 void setDisplayUnit( DisplayUnit displayUnit ){
-	g_displayUnit = displayUnit;
+	g_displayUnit = sanitizeDisplayUnit( displayUnit );
 }
 
 DisplayUnit displayUnitFromInt( int value ){
@@ -33,7 +44,7 @@ DisplayUnit displayUnitFromInt( int value ){
 	case 1:
 		return DisplayUnit::Meters;
 	case 2:
-		return DisplayUnit::Miles;
+		return DisplayUnit::Inches;
 	case 0:
 	default:
 		return DisplayUnit::QuakeUnits;
@@ -44,7 +55,7 @@ int displayUnitToInt( DisplayUnit displayUnit ){
 	switch ( displayUnit ) {
 	case DisplayUnit::Meters:
 		return 1;
-	case DisplayUnit::Miles:
+	case DisplayUnit::Inches:
 		return 2;
 	case DisplayUnit::QuakeUnits:
 	default:
@@ -62,8 +73,8 @@ double quakeToDisplay( double qu ){
 	switch ( g_displayUnit ) {
 	case DisplayUnit::Meters:
 		return qu * meters_per_quake_unit;
-	case DisplayUnit::Miles:
-		return qu * meters_per_quake_unit / meters_per_mile;
+	case DisplayUnit::Inches:
+		return qu * meters_per_quake_unit / meters_per_inch;
 	case DisplayUnit::QuakeUnits:
 	default:
 		return qu;
@@ -74,8 +85,8 @@ const char* displayUnitSuffix(){
 	switch ( g_displayUnit ) {
 	case DisplayUnit::Meters:
 		return "m";
-	case DisplayUnit::Miles:
-		return "mi";
+	case DisplayUnit::Inches:
+		return "in";
 	case DisplayUnit::QuakeUnits:
 	default:
 		return "qu";
@@ -100,8 +111,8 @@ int displayUnitDefaultDecimals(){
 	switch ( g_displayUnit ) {
 	case DisplayUnit::Meters:
 		return 2;
-	case DisplayUnit::Miles:
-		return 3;
+	case DisplayUnit::Inches:
+		return 1;
 	case DisplayUnit::QuakeUnits:
 	default:
 		return 1;
