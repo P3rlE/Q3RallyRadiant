@@ -36,14 +36,25 @@
 #include "watchbsp.h"
 
 #include <QTimer>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QHBoxLayout>
+#include <QFileDialog>
+#include <QDialogButtonBox>
+#include <QLabel>
 
 #include "commandlib.h"
 #include "string/string.h"
 #include "stream/stringstream.h"
 
 #include "gtkutil/messagebox.h"
+#include "gtkutil/widget.h"
 #include "xmlstuff.h"
 #include "console.h"
+#include "commands.h"
 #include "preferences.h"
 #include "points.h"
 #include "feedback.h"
@@ -267,6 +278,11 @@ void BuildMonitor_Construct(){
 	GlobalPreferenceSystem().registerPreference( "BuildDumpLog", BoolImportStringCaller( g_WatchBSP0_DumpLog ), BoolExportStringCaller( g_WatchBSP0_DumpLog ) );
 	GlobalPreferenceSystem().registerPreference( "RegionBoxShader", CopiedStringImportStringCaller( g_regionBoxShader ), CopiedStringExportStringCaller( g_regionBoxShader ) );
 	Build_registerPreferencesPage();
+
+	GlobalToggles_insert( "Build_RunAfterCompile",
+		makeCallbackF( Build_ToggleRunAfterCompile ),
+		ToggleItem::AddCallbackCaller( g_runAfterCompile_item ) );
+	GlobalCommands_insert( "BuildEngineConfig", makeCallbackF( BuildEngineDialog ) );
 }
 
 void BuildMonitor_Destroy(){
@@ -338,6 +354,71 @@ bool BuildMonitor_GetRunAfterCompile(){
 }
 void BuildMonitor_SetRunAfterCompile( bool enabled ){
 	g_WatchBSP_RunQuake = enabled;
+	g_runAfterCompile_item.update();
+}
+
+// ToggleItem for "Run after compile" Build-menu check item
+static void Build_exportRunAfterCompile( const BoolImportCallback& callback ){
+	callback( g_WatchBSP_RunQuake );
+}
+ToggleItem g_runAfterCompile_item( FreeCaller<void(const BoolImportCallback&), Build_exportRunAfterCompile>() );
+
+void Build_ToggleRunAfterCompile(){
+	BuildMonitor_SetRunAfterCompile( !g_WatchBSP_RunQuake );
+}
+
+// Small dialog to configure engine executable path and arguments
+void BuildEngineDialog(){
+	auto *dialog = new QDialog( MainFrame_getWindow(), Qt::Dialog | Qt::WindowCloseButtonHint );
+	dialog->setWindowTitle( "Engine konfigurieren" );
+	dialog->setMinimumWidth( 550 );
+
+	auto *root = new QVBoxLayout( dialog );
+	root->addWidget( new QLabel( "Pfad zur ausführbaren Engine-Datei (z. B. q3rally.exe):" ) );
+
+	auto *form = new QFormLayout;
+
+	// Engine executable row with Browse button
+	auto *exeRow = new QHBoxLayout;
+	auto *exeEdit = new QLineEdit( g_engineExecutable.string().c_str() );
+	auto *browseBtn = new QPushButton( "..." );
+	browseBtn->setFixedWidth( 32 );
+	exeRow->addWidget( exeEdit );
+	exeRow->addWidget( browseBtn );
+	form->addRow( "Engine (.exe):", exeRow );
+
+	auto *argsEdit = new QLineEdit( g_engineArgs.string().c_str() );
+	form->addRow( "Argumente:", argsEdit );
+
+	root->addLayout( form );
+
+	QObject::connect( browseBtn, &QPushButton::clicked, dialog, [=](){
+		const QString path = QFileDialog::getOpenFileName(
+			dialog, "Engine-Datei auswählen",
+			g_engineExecutable.string().c_str(),
+#if defined( WIN32 )
+			"Executable (*.exe);;All files (*)"
+#else
+			"All files (*)"
+#endif
+		);
+		if ( !path.isEmpty() )
+			exeEdit->setText( path );
+	} );
+
+	auto *buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
+	root->addWidget( buttons );
+	QObject::connect( buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept );
+	QObject::connect( buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject );
+
+	if ( dialog->exec() == QDialog::Accepted ) {
+		const auto exeText = exeEdit->text().toLatin1();
+		const auto argsText = argsEdit->text().toLatin1();
+		// Import via the registered callbacks (handles "default:" prefix logic)
+		g_engineExecutable.getImportCaller()( exeText.constData() );
+		g_engineArgs.getImportCaller()( argsText.constData() );
+	}
+	delete dialog;
 }
 static void runEngine( char *cmd ){
 	globalOutputStream() << "Running engine...\n" << cmd << '\n';

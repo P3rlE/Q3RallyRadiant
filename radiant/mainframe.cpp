@@ -1182,6 +1182,12 @@ void create_bsp_menu( QMenuBar *menubar ){
 
 	create_menu_item_with_mnemonic( menu, "Customize...", "BuildMenuCustomize" );
 	create_menu_item_with_mnemonic( menu, "Run recent build", "Build_runRecentExecutedBuild" );
+	create_check_menu_item_with_mnemonic( menu, "Run after compile", "Build_RunAfterCompile" );
+	create_menu_item_with_mnemonic( menu, "Engine konfigurieren...", "BuildEngineConfig" );
+
+	menu->addSeparator();
+
+	create_menu_item_with_mnemonic( menu, "Q3Rally Preflight", "Q3RallyPreflight" );
 
 	menu->addSeparator();
 
@@ -2084,7 +2090,7 @@ bool Q3RallyPreflight_AllowBuild(){
 	RallyPreflight_collectSeverityCounts( report, errors, warnings, infos );
 	if ( errors > 0 ) {
 		globalErrorStream() << "Q3Rally preflight build-gate blockiert Build: " << errors << " Fehler, " << warnings << " Warnungen.\n";
-		const QString message = QString( "Build blockiert: Q3Rally Preflight meldet %1 Fehler.\nÖffne 'Misc > Q3Rally Preflight' für Details." ).arg( errors );
+		const QString message = QString( "Build blockiert: Q3Rally Preflight meldet %1 Fehler.\nÖffne 'Build > Q3Rally Preflight' für Details." ).arg( errors );
 		QMessageBox::warning( MainFrame_getWindow(), "Q3Rally Build-Gate", message );
 		return false;
 	}
@@ -2330,7 +2336,6 @@ void create_misc_menu( QMenuBar *menubar ){
 
 	create_menu_item_with_mnemonic( menu, "Find brush...", "FindBrush" );
 	create_menu_item_with_mnemonic( menu, "Map Info...", "MapInfo" );
-	create_menu_item_with_mnemonic( menu, "Q3Rally Preflight", "Q3RallyPreflight" );
 	create_menu_item_with_mnemonic( menu, "&Refresh models", "RefreshReferences" );
 	create_menu_item_with_mnemonic( menu, "Set 2D &Background image...", makeCallbackF( WXY_SetBackgroundImage ) );
 	create_menu_item_with_mnemonic( menu, "Fullscreen", "Fullscreen" );
