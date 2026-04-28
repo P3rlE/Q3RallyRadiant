@@ -24,6 +24,7 @@
   entities="quake3"
   brushtypes="quake3"
   patchtypes="quake3"
+  si_flags="1"
 
   surf20="GRASS"
   surf21="ASPHALT"

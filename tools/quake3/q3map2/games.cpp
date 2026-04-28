@@ -203,6 +203,47 @@ struct game_quake3 : game_default
 	}
 };
 
+struct game_q3rally : game_default
+{
+	/* Q3Rally custom surface type flags — must match bg_physics.c / PM_CheckSurfaceFlags */
+	static const int Q3R_SURF_GRASS             = 0x00080000;
+	static const int Q3R_SURF_ASPHALT           = 0x00100000;
+	static const int Q3R_SURF_WET               = 0x00200000;
+	static const int Q3R_SURF_SNOW              = 0x00400000;
+	static const int Q3R_SURF_GRAVEL            = 0x00800000;
+	static const int Q3R_SURF_ICE               = 0x01000000;
+	static const int Q3R_SURF_DIRT              = 0x02000000;
+	static const int Q3R_SURF_METAL             = 0x04000000;
+	static const int Q3R_SURF_SAND              = 0x08000000;
+
+	/* All physics-relevant Q3Rally flags — applied to bevel faces so edge-crossing
+	   preserves the correct surface type for vehicle physics */
+	static const int Q3R_SURF_PHYSICS_MASK      = ( Q3R_SURF_GRASS | Q3R_SURF_ASPHALT |
+	                                                Q3R_SURF_WET   | Q3R_SURF_SNOW    |
+	                                                Q3R_SURF_GRAVEL| Q3R_SURF_ICE     |
+	                                                Q3R_SURF_DIRT  | Q3R_SURF_METAL   |
+	                                                Q3R_SURF_SAND );
+
+	game_q3rally(){
+		arg          = "q3rally";  /* select with -game q3rally */
+		gamePath     = "baseq3r";
+		homeBasePath = ".q3r";
+		surfaceParms.insert( surfaceParms.end(), {
+		/* name        contentFlags  contentFlagsClear  surfaceFlags        surfaceFlagsClear  compileFlags  compileFlagsClear */
+		{ "grass",     0,            0,                 Q3R_SURF_GRASS,     0,                 0,            0 },
+		{ "asphalt",   0,            0,                 Q3R_SURF_ASPHALT,   0,                 0,            0 },
+		{ "wet",       0,            0,                 Q3R_SURF_WET,       0,                 0,            0 },
+		{ "snow",      0,            0,                 Q3R_SURF_SNOW,      0,                 0,            0 },
+		{ "gravel",    0,            0,                 Q3R_SURF_GRAVEL,    0,                 0,            0 },
+		{ "ice",       0,            0,                 Q3R_SURF_ICE,       0,                 0,            0 },
+		{ "dirt",      0,            0,                 Q3R_SURF_DIRT,      0,                 0,            0 },
+		{ "metal",     0,            0,                 Q3R_SURF_METAL,     0,                 0,            0 },
+		{ "sand",      0,            0,                 Q3R_SURF_SAND,      0,                 0,            0 },
+		} );
+		brushBevelsSurfaceFlagsMask |= Q3R_SURF_PHYSICS_MASK;
+	}
+};
+
 struct game_quakelive : game_default
 {
 	// Additional surface flags for Quake Live
@@ -919,7 +960,8 @@ struct game_ja : game_sof2
 
 
 
-const std::vector<game_t> g_games = { game_quake3(),
+const std::vector<game_t> g_games = { game_q3rally(),
+                                      game_quake3(),
                                       game_quakelive(),
                                       game_nexuiz(),
                                       game_xonotic(),
