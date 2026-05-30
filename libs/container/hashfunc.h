@@ -354,7 +354,7 @@ class HashKey
 		{
 			*i = UB4Traits::as_ub4( *i );
 		}
-		m_hash = hash_ub4( m_key.data(), m_key.size(), ub4_default_traits() );
+		m_hash = hash_ub4<UB4Traits>( m_key.data(), m_key.size(), UB4Traits() );
 	}
 	bool equal( const HashKey& other ) const {
 		return m_hash == other.m_hash && m_key.size() == other.m_key.size()
