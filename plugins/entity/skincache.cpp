@@ -270,16 +270,16 @@ public:
 	void realise() override {
 		g_skins.realise();
 		m_realised = true;
-		for ( auto& skin : m_cache )
+		for ( Cache::iterator i = m_cache.begin(); i != m_cache.end(); ++i )
 		{
-			skin.value->realise( skin.key.c_str() );
+			( *i ).value->realise( ( *i ).key.c_str() );
 		}
 	}
 	void unrealise() override {
 		m_realised = false;
-		for ( auto& skin : m_cache )
+		for ( Cache::iterator i = m_cache.begin(); i != m_cache.end(); ++i )
 		{
-			skin.value->unrealise();
+			( *i ).value->unrealise();
 		}
 		g_skins.unrealise();
 	}
