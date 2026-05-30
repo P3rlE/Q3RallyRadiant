@@ -362,10 +362,12 @@ class HashKey
 	}
 
 public:
-	HashKey( const HashKey& other ) : m_key( other.m_key.size() ){
+	HashKey() : m_key( 0 ), m_hash( 0 ){
+	}
+	HashKey( const HashKey& other ) : m_key( other.m_key.size() ), m_hash( 0 ){
 		copy( other );
 	}
-	HashKey( const char* string ) : m_key( string_length_ub4( string ) ){
+	HashKey( const char* string ) : m_key( string_length_ub4( string ) ), m_hash( 0 ){
 		copy( string );
 	}
 	HashKey& operator=( const char* string ){
