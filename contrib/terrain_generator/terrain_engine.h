@@ -32,7 +32,10 @@ enum class ShapeType {
 	BankedTurn  = 9,
 	Berm        = 10,
 	JumpRamp    = 11,
-	Whoops      = 12
+	Whoops      = 12,
+	SCurve      = 13,
+	Hairpin     = 14,
+	OffCamber   = 15
 };
 
 enum class NoiseType {

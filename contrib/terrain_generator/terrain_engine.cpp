@@ -355,6 +355,46 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 				base_z = shape_height * 0.5 * ( wave + 1.0 ) * lane_mask;
 				break;
 			}
+			case ShapeType::SCurve: {
+				// Banking reverses halfway along Y — left side up in first half,
+				// right side up in second half. Smooth crossover at ny = 0.5.
+				const double lateral = nx - 0.5;
+				base_z = shape_height * lateral * -std::cos( ny * std::numbers::pi );
+				break;
+			}
+			case ShapeType::Hairpin: {
+				// Tight 180° turn: apex at top-centre of the brush, outer edge banked up.
+				const double turn_cx = ( target.min_x + target.max_x ) * 0.5;
+				const double turn_cy = target.max_y - target.width_x * 0.3;
+				const double dx = x - turn_cx;
+				const double dy = y - turn_cy;
+				const double r = std::sqrt( dx * dx + dy * dy );
+				const double inner_r = target.width_x * 0.15;
+				const double outer_r = target.width_x * 0.55;
+				// 0 at inner edge → 1 at outer edge
+				const double radial = std::clamp( ( r - inner_r ) / std::max( outer_r - inner_r, 1.0 ), 0.0, 1.0 );
+				// Blend banking in gradually as the track approaches the hairpin apex
+				const double blend = std::clamp( ( ny - 0.2 ) / 0.5, 0.0, 1.0 );
+				base_z = shape_height * radial * blend;
+				break;
+			}
+			case ShapeType::OffCamber: {
+				// Like BankedTurn but the surface tilts away from the turn centre —
+				// the outside drops instead of rising (technical, challenging).
+				const double safe_radius = std::max( curve_radius, step_x * 2.0 );
+				const double turn_center_x = target.min_x + safe_radius;
+				const double turn_center_y = target.min_y + safe_radius;
+				const double dx = x - turn_center_x;
+				const double dy = y - turn_center_y;
+				const double r = std::sqrt( dx * dx + dy * dy );
+				const double lane_half = std::max( 64.0, target.width_x * 0.30 );
+				const double radial = std::clamp( ( r - safe_radius ) / lane_half, -1.0, 1.0 );
+				const double bank_angle_rad = std::clamp( banking_angle_deg, 0.0, 45.0 ) * std::numbers::pi / 180.0;
+				const double bank_z = -radial * std::tan( bank_angle_rad ) * lane_half;
+				const double lane_shape = std::max( 0.0, 1.0 - std::abs( radial ) );
+				base_z = shape_height * lane_shape + bank_z;
+				break;
+			}
 			default:
 				break;
 			}

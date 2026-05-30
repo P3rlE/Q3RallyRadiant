@@ -277,6 +277,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		shape_combo->addItem( "Berm",             (int)ShapeType::Berm );
 		shape_combo->addItem( "Jump Ramp",        (int)ShapeType::JumpRamp );
 		shape_combo->addItem( "Whoops",           (int)ShapeType::Whoops );
+		shape_combo->addItem( "S-Curve",          (int)ShapeType::SCurve );
+		shape_combo->addItem( "Hairpin",          (int)ShapeType::Hairpin );
+		shape_combo->addItem( "Off-Camber Turn",  (int)ShapeType::OffCamber );
 		shape_combo->setCurrentIndex( 0 ); // Flat
 		form->addRow( "Base Shape:", shape_combo );
 
@@ -726,6 +729,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			"Berm Height:",    // Berm
 			"Ramp Height:",    // JumpRamp
 			"Whoop Height:",   // Whoops
+			"Bank Height:",    // SCurve
+			"Turn Height:",    // Hairpin
+			"Turn Height:",    // OffCamber
 		};
 
 		// Returns true when slope height should be derived from the selection
@@ -773,7 +779,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const ShapeType st         = (ShapeType)shape_combo->itemData( idx ).toInt();
 			const bool is_flat         = ( st == ShapeType::Flat );
 			const bool is_slope_tunnel = ( st == ShapeType::SlopeTunnel );
-			const bool is_banked_turn  = ( st == ShapeType::BankedTurn );
+			const bool is_banked_turn  = ( st == ShapeType::BankedTurn || st == ShapeType::OffCamber );
 			const bool uses_ramp_len   = ( st == ShapeType::JumpRamp || st == ShapeType::Whoops );
 
 			set_row_visible( shape_height_spin, !is_flat );
