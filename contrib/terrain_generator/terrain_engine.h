@@ -10,6 +10,15 @@ using HeightMap   = std::map<std::pair<double, double>, double>;
 using WallMap     = std::map<std::pair<double, double>, double>;
 using MaskMap     = std::map<std::pair<double, double>, double>;
 
+enum class SurfaceKind {
+	Auto = 0,
+	Track = 1,
+	Shoulder = 2,
+	Terrain = 3
+};
+
+using SurfaceMap = std::map<std::pair<double, double>, SurfaceKind>;
+
 struct TunnelMaps
 {
 	HeightMap floor_map;
@@ -44,11 +53,38 @@ enum class NoiseType {
 	Random  = 2
 };
 
+enum class TrackSectionType {
+	Straight = 0,
+	BankedTurn = 1,
+	SCurve = 2,
+	Hairpin = 3,
+	Jump = 4,
+	Whoops = 5
+};
+
 struct PostProcessSettings
 {
 	int laplacian_iterations = 0;
 	int thermal_iterations = 0;
 	int hydraulic_iterations = 0;
+};
+
+struct TrackSectionOptions
+{
+	TrackSectionType type = TrackSectionType::Straight;
+	double track_width = 384.0;
+	double shoulder_width = 128.0;
+	double berm_height = 64.0;
+	double banking_angle_deg = 10.0;
+	double feature_height = 128.0;
+	double feature_length = 512.0;
+	bool smooth_track = true;
+};
+
+struct TrackSectionMaps
+{
+	HeightMap height_map;
+	SurfaceMap surface_map;
 };
 
 BrushData make_manual_brush_data( double width, double length, double height );
@@ -71,3 +107,11 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
                                         const MaskMap& mask_map,
                                         NoiseType noise_type, double terrace_step,
                                         int seed );
+
+TrackSectionMaps generate_track_section_maps( const BrushData& target, double step_x, double step_y,
+                                              const TrackSectionOptions& track_options,
+                                              double variance, double frequency,
+                                              const MaskMap& mask_map,
+                                              NoiseType noise_type, double terrace_step,
+                                              const PostProcessSettings& post_process,
+                                              int seed );

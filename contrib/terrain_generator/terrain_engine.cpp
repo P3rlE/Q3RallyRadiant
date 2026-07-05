@@ -457,6 +457,200 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 }
 
 // ---------------------------------------------------------------------------
+// Track section heightmap
+// ---------------------------------------------------------------------------
+
+static double smoothstep01( double v ){
+	const double t = std::clamp( v, 0.0, 1.0 );
+	return t * t * ( 3.0 - 2.0 * t );
+}
+
+static double signed_track_distance( const BrushData& target, TrackSectionType section_type,
+                                     double x, double y, double half_track, double half_shoulder,
+                                     double& progress ){
+	const double ny = target.length_y > 0.0 ? ( y - target.min_y ) / target.length_y : 0.0;
+	const double center_x = ( target.min_x + target.max_x ) * 0.5;
+	progress = ny;
+
+	switch ( section_type ) {
+	case TrackSectionType::BankedTurn: {
+		const double safe_radius = std::max( target.width_x * 0.45, half_track + half_shoulder + 64.0 );
+		const double cx = target.min_x + safe_radius;
+		const double cy = target.min_y + safe_radius;
+		const double dx = x - cx;
+		const double dy = y - cy;
+		const double r = std::sqrt( dx * dx + dy * dy );
+		progress = std::clamp( std::atan2( dy, dx ) / ( std::numbers::pi * 0.5 ), 0.0, 1.0 );
+		return r - safe_radius;
+	}
+	case TrackSectionType::SCurve: {
+		const double amplitude = std::max( 0.0, target.width_x * 0.5 - half_track - half_shoulder );
+		const double curve_center = center_x + amplitude * std::sin( ( ny - 0.5 ) * 2.0 * std::numbers::pi );
+		return x - curve_center;
+	}
+	case TrackSectionType::Hairpin: {
+		const double radius = std::max( half_track + half_shoulder + 64.0, std::min( target.width_x, target.length_y ) * 0.32 );
+		const double cx = center_x;
+		const double cy = target.max_y - radius;
+		const double dx = x - cx;
+		const double dy = y - cy;
+		const double r = std::sqrt( dx * dx + dy * dy );
+		const double angle = std::atan2( dy, dx );
+		progress = std::clamp( ( angle + std::numbers::pi ) / std::numbers::pi, 0.0, 1.0 );
+		return r - radius;
+	}
+	default:
+		return x - center_x;
+	}
+}
+
+static double track_feature_height( TrackSectionType section_type, double progress,
+                                    double y, const BrushData& target,
+                                    double feature_height, double feature_length ){
+	switch ( section_type ) {
+	case TrackSectionType::Jump: {
+		const double safe_len = std::max( feature_length, 64.0 );
+		const double distance = y - target.min_y;
+		const double launch = smoothstep01( std::clamp( distance / safe_len, 0.0, 1.0 ) );
+		const double landing = 1.0 - smoothstep01( std::clamp( ( distance - safe_len ) / safe_len, 0.0, 1.0 ) );
+		return feature_height * std::min( launch, landing );
+	}
+	case TrackSectionType::Whoops: {
+		const double safe_spacing = std::max( feature_length, 64.0 );
+		const double wave = std::sin( ( y - target.min_y ) * ( 2.0 * std::numbers::pi / safe_spacing ) );
+		return feature_height * 0.5 * ( wave + 1.0 );
+	}
+	case TrackSectionType::Hairpin:
+		return feature_height * 0.2 * smoothstep01( progress );
+	default:
+		return 0.0;
+	}
+}
+
+TrackSectionMaps generate_track_section_maps( const BrushData& target, double step_x, double step_y,
+                                              const TrackSectionOptions& track_options,
+                                              double variance, double frequency,
+                                              const MaskMap& mask_map,
+                                              NoiseType noise_type, double terrace_step,
+                                              const PostProcessSettings& post_process,
+                                              int seed ){
+	TrackSectionMaps result;
+	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
+	const int width = static_cast<int>( std::round( target.width_x / step_x ) ) + 1;
+	const int height = static_cast<int>( std::round( target.length_y / step_y ) ) + 1;
+	std::vector<double> grid;
+	grid.reserve( static_cast<std::size_t>( width ) * static_cast<std::size_t>( height ) );
+
+	const double half_track = std::max( step_x, track_options.track_width * 0.5 );
+	const double shoulder = std::max( 0.0, track_options.shoulder_width );
+	const double half_total = half_track + shoulder;
+	const double bank_angle_rad = std::clamp( track_options.banking_angle_deg, -45.0, 45.0 ) * std::numbers::pi / 180.0;
+	double seed_x = rng.random_double() * 10000.0;
+	double seed_y = rng.random_double() * 10000.0;
+
+	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
+		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			double progress = 0.0;
+			const double signed_dist = signed_track_distance( target, track_options.type, x, y, half_track, shoulder, progress );
+			const double abs_dist = std::abs( signed_dist );
+			const bool on_track = abs_dist <= half_track;
+			const bool on_shoulder = !on_track && abs_dist <= half_total;
+
+			SurfaceKind surface = SurfaceKind::Terrain;
+			if ( on_track ) {
+				surface = SurfaceKind::Track;
+			}
+			else if ( on_shoulder ) {
+				surface = SurfaceKind::Shoulder;
+			}
+
+			double lane_weight = 0.0;
+			if ( abs_dist < half_total ) {
+				lane_weight = 1.0 - smoothstep01( std::clamp( ( abs_dist - half_track ) / std::max( shoulder, 1.0 ), 0.0, 1.0 ) );
+			}
+
+			const double track_profile = track_feature_height( track_options.type, progress, y, target,
+			                                                  track_options.feature_height, track_options.feature_length );
+			double bank_z = 0.0;
+			if ( track_options.type == TrackSectionType::BankedTurn
+			  || track_options.type == TrackSectionType::SCurve
+			  || track_options.type == TrackSectionType::Hairpin ) {
+				double direction = 1.0;
+				if ( track_options.type == TrackSectionType::SCurve ) {
+					direction = -std::cos( progress * std::numbers::pi * 2.0 );
+				}
+				bank_z = signed_dist / std::max( half_track, 1.0 ) * std::tan( bank_angle_rad ) * half_track * direction;
+			}
+
+			const double berm_center = half_track + shoulder * 0.45;
+			const double berm_width = std::max( shoulder * 0.55, step_x );
+			const double berm_dist = std::abs( abs_dist - berm_center ) / berm_width;
+			const double berm_z = track_options.berm_height * std::max( 0.0, 1.0 - smoothstep01( berm_dist ) );
+
+			double noise_z = 0.0;
+			if ( variance > 0.0 ) {
+				const double mask_weight = sample_mask_weight( mask_map, x, y );
+				const double surface_weight = track_options.smooth_track
+				                            ? ( on_track ? 0.0 : ( on_shoulder ? 0.35 : 1.0 ) )
+				                            : ( on_track ? 0.25 : ( on_shoulder ? 0.55 : 1.0 ) );
+				const double local_variance = variance * mask_weight * surface_weight;
+				const double local_frequency = frequency * std::max( mask_weight, 0.1 );
+				if ( noise_type == NoiseType::Random ) {
+					noise_z = ( rng.random_double() * ( local_variance * 2.0 ) ) - local_variance;
+				}
+				else {
+					noise_z = sample_noise( noise_type,
+					                        ( x + seed_x ) * local_frequency,
+					                        ( y + seed_y ) * local_frequency, rng ) * local_variance;
+				}
+			}
+
+			double final_z = target.max_z + track_profile * lane_weight + bank_z * lane_weight + berm_z + noise_z;
+			if ( terrace_step > 0.0 && !on_track ) {
+				final_z = std::floor( final_z / terrace_step ) * terrace_step;
+			}
+
+			grid.push_back( final_z );
+			result.surface_map[{ round2( x ), round2( y ) }] = surface;
+		}
+	}
+
+	if ( !track_options.smooth_track && !grid.empty() ) {
+		const std::size_t cell_count = grid.size();
+		const int lap_iters = clamp_iteration_count( post_process.laplacian_iterations, cell_count );
+		for ( int i = 0; i < lap_iters; ++i ) {
+			if ( laplacian_pass( grid, width, height, terrace_step ) < 0.05 ) {
+				break;
+			}
+		}
+
+		const int thermal_iters = clamp_iteration_count( post_process.thermal_iterations, cell_count );
+		for ( int i = 0; i < thermal_iters; ++i ) {
+			if ( thermal_pass( grid, width, height, terrace_step ) < 0.02 ) {
+				break;
+			}
+		}
+
+		TerrainRng hydraulic_rng( mix_seed( static_cast<std::uint32_t>( seed ), 0x74726163U ) );
+		const int hydraulic_iters = clamp_iteration_count( post_process.hydraulic_iterations, cell_count );
+		for ( int i = 0; i < hydraulic_iters; ++i ) {
+			if ( hydraulic_pass( grid, width, height, terrace_step, hydraulic_rng ) < 0.02 ) {
+				break;
+			}
+		}
+	}
+
+	std::size_t index = 0;
+	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
+		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			result.height_map[{ round2( x ), round2( y ) }] = std::round( grid[index++] );
+		}
+	}
+
+	return result;
+}
+
+// ---------------------------------------------------------------------------
 // Tunnel heightmaps
 // ---------------------------------------------------------------------------
 

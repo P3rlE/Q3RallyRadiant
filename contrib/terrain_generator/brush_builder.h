@@ -39,6 +39,7 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
                              const TerrainMaterialRules& material_rules,
                              bool split_diagonally,
                              const TerrainBuildOptions& options,
+                             const SurfaceMap* surface_map = nullptr,
                              std::vector<scene::Node*>* created_entities = nullptr );
 
 void build_tunnel_brushes( const BrushData& target, double step_x, double step_y,

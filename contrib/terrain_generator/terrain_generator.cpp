@@ -64,6 +64,11 @@ enum class PostProcessPreset {
 	Aggressive = 3
 };
 
+enum class GenerationMode {
+	Terrain = 0,
+	TrackSection = 1
+};
+
 static int make_auto_seed(){
 	std::random_device rd;
 	return static_cast<int>( rd() );
@@ -188,6 +193,12 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		target_combo->setCurrentIndex( init_sel.valid ? 0 : 1 );
 		form->addRow( "Target:", target_combo );
 
+		auto *generation_mode_combo = new ComboBox;
+		generation_mode_combo->addItem( "Terrain Surface", (int)GenerationMode::Terrain );
+		generation_mode_combo->addItem( "Track Section",   (int)GenerationMode::TrackSection );
+		generation_mode_combo->setCurrentIndex( 0 );
+		form->addRow( "Mode:", generation_mode_combo );
+
 		// Selection size — live labels (left) + frozen reference labels (right).
 		// Reference is captured on the first Generate click and stays fixed.
 		// Helper: build one inline row widget with [current | ref: value]
@@ -283,11 +294,32 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		shape_combo->setCurrentIndex( 0 ); // Flat
 		form->addRow( "Base Shape:", shape_combo );
 
+		auto *track_section_combo = new ComboBox;
+		track_section_combo->addItem( "Straight",    (int)TrackSectionType::Straight );
+		track_section_combo->addItem( "Banked Turn", (int)TrackSectionType::BankedTurn );
+		track_section_combo->addItem( "S-Curve",     (int)TrackSectionType::SCurve );
+		track_section_combo->addItem( "Hairpin",     (int)TrackSectionType::Hairpin );
+		track_section_combo->addItem( "Jump",        (int)TrackSectionType::Jump );
+		track_section_combo->addItem( "Whoops",      (int)TrackSectionType::Whoops );
+		form->addRow( "Track Section:", track_section_combo );
+
 		// Shape height — editable spinbox (manual mode or non-slope shapes).
 		// For Slope / Slope Tunnel in Use Selection mode, replaced by a
 		// read-only label derived from the selection brush's Z extent.
 		auto *shape_height_spin = new DoubleSpinBox( 0, 4096, 160, 2, 8 );
 		form->addRow( "Peak Height:", shape_height_spin );
+
+		auto *track_width_spin = new DoubleSpinBox( 64, 8192, 384, 2, 16 );
+		auto *track_shoulder_spin = new DoubleSpinBox( 0, 4096, 128, 2, 16 );
+		auto *track_berm_spin = new DoubleSpinBox( 0, 1024, 64, 2, 8 );
+		auto *track_feature_height_spin = new DoubleSpinBox( 0, 4096, 128, 2, 8 );
+		auto *track_smooth_cb = new QCheckBox( "Smooth driving surface" );
+		track_smooth_cb->setChecked( true );
+		form->addRow( "Track Width:", track_width_spin );
+		form->addRow( "Shoulder Width:", track_shoulder_spin );
+		form->addRow( "Berm Height:", track_berm_spin );
+		form->addRow( "Feature Height:", track_feature_height_spin );
+		form->addRow( "", track_smooth_cb );
 
 		// Tunnel height — only visible for Slope Tunnel
 		auto *tunnel_height_spin = new DoubleSpinBox( 0, 4096, 192, 2, 8 );
@@ -517,10 +549,12 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 			// --- Read parameters ---
 			const bool use_manual  = ( target_combo->currentIndex() == 1 );
+			const bool track_mode  = ( (GenerationMode)generation_mode_combo->currentData().toInt() == GenerationMode::TrackSection );
 			const bool advanced    = sq_advanced->isChecked();
 			const double step_x    = advanced ? step_x_spin->value() : sq_combo->currentData().toInt();
 			const double step_y    = advanced ? step_y_spin->value() : sq_combo->currentData().toInt();
 			const ShapeType shape  = (ShapeType)shape_combo->currentData().toInt();
+			const TrackSectionType track_section = (TrackSectionType)track_section_combo->currentData().toInt();
 			const NoiseType noise  = (NoiseType)noise_combo->currentData().toInt();
 			const double tun_height = tunnel_height_spin->value();
 			const double variance     = variance_spin->value();
@@ -535,6 +569,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double curve_radius = curve_radius_spin->value();
 			const double bank_angle   = banking_angle_spin->value();
 			const double ramp_length  = ramp_length_spin->value();
+			const TrackSectionOptions track_options{
+				track_section,
+				track_width_spin->value(),
+				track_shoulder_spin->value(),
+				track_berm_spin->value(),
+				bank_angle,
+				track_feature_height_spin->value(),
+				ramp_length,
+				track_smooth_cb->isChecked()
+			};
 			int seed = seed_spin->value();
 			if ( auto_seed_cb->isChecked() ) {
 				seed = make_auto_seed();
@@ -624,6 +668,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			// drop amount (auto-filled from brush Z − 64). Negate it so the
 			// engine formula (base_z = shape_height * nx) slopes downward.
 			const bool   slope_from_sel = !use_manual
+			                           && !track_mode
 			                           && ( shape == ShapeType::Slope || shape == ShapeType::SlopeTunnel );
 			// Spinbox shows the full brush Z height. For the downward slope the
 			// engine needs the drop amount (full_z − 64), negated so the
@@ -648,10 +693,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const MaskMap mask_map = build_mask_map( target, step_x, step_y, mask_preset, mask_image_edit->text() );
 
 			// --- Generate ---
-			const bool is_tunnel = ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
+			const bool is_tunnel = !track_mode && ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
 
 			globalOutputStream() << "TerrainGenerator: generating "
-			                     << ( is_tunnel ? "tunnel" : "terrain" )
+			                     << ( track_mode ? "track section" : ( is_tunnel ? "tunnel" : "terrain" ) )
 			                     << " — bounds ("
 			                     << target.width_x << " x " << target.length_y << " x " << target.height_z
 			                     << "), step (" << step_x << " x " << step_y << ")"
@@ -662,7 +707,13 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			build_options.preview  = preview_mode;
 			build_options.undoable = !preview_mode;
 
-			if ( is_tunnel ) {
+			if ( track_mode ) {
+				auto maps = generate_track_section_maps( target, step_x, step_y, track_options, variance, frequency,
+				                                        mask_map, noise, terrace, post_process, seed );
+				build_terrain_brushes( target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
+				                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
+			}
+			else if ( is_tunnel ) {
 				const double cave_height    = ( shape == ShapeType::SlopeTunnel ) ? tun_height   : shape_height;
 				const double slope_height   = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0;
 				const double tunnel_terrace = ( shape == ShapeType::SlopeTunnel ) ? terrace      : 0.0;
@@ -675,7 +726,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, mask_map,
 				                                      noise, terrace, curve_radius, bank_angle, ramp_length, post_process, seed );
 				build_terrain_brushes( target, step_x, step_y, height_map, texture, material_slots, material_rules, split_diagonally,
-				                      build_options, preview_mode ? &preview_entities : nullptr );
+				                      build_options, nullptr, preview_mode ? &preview_entities : nullptr );
 			}
 
 			g_last_seed = seed;
@@ -734,11 +785,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			"Turn Height:",    // OffCamber
 		};
 
+		auto is_track_mode = [&]() -> bool {
+			return (GenerationMode)generation_mode_combo->currentData().toInt() == GenerationMode::TrackSection;
+		};
+
 		// Returns true when slope height should be derived from the selection
 		// (Use Selection mode + Slope or Slope Tunnel shape).
 		auto slope_derived = [&]() -> bool {
 			const ShapeType st = (ShapeType)shape_combo->currentData().toInt();
 			return target_combo->currentIndex() == 0
+			    && !is_track_mode()
 			    && ( st == ShapeType::Slope || st == ShapeType::SlopeTunnel );
 		};
 
@@ -774,16 +830,45 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			set_row_visible( step_y_spin, advanced );
 		};
 
+		auto update_track_section = [&](){
+			const bool track_mode = is_track_mode();
+			const TrackSectionType st = (TrackSectionType)track_section_combo->currentData().toInt();
+			const bool uses_bank = st == TrackSectionType::BankedTurn
+			                    || st == TrackSectionType::SCurve
+			                    || st == TrackSectionType::Hairpin;
+			const bool uses_feature = st == TrackSectionType::Hairpin
+			                       || st == TrackSectionType::Jump
+			                       || st == TrackSectionType::Whoops;
+			const bool uses_length = st == TrackSectionType::Jump
+			                      || st == TrackSectionType::Whoops;
+
+			set_row_visible( track_section_combo, track_mode );
+			set_row_visible( track_width_spin, track_mode );
+			set_row_visible( track_shoulder_spin, track_mode );
+			set_row_visible( track_berm_spin, track_mode );
+			set_row_visible( track_feature_height_spin, track_mode && uses_feature );
+			set_row_visible( track_smooth_cb, track_mode );
+			set_row_visible( track_min_spin, !track_mode );
+			set_row_visible( track_max_spin, !track_mode );
+			if ( track_mode ) {
+				set_row_visible( banking_angle_spin, uses_bank );
+				set_row_visible( ramp_length_spin, uses_length );
+				set_row_visible( curve_radius_spin, false );
+			}
+		};
+
 		// Shape type toggle: labels + visibility
 		auto update_shape = [&]( int idx ){
+			const bool track_mode = is_track_mode();
 			const ShapeType st         = (ShapeType)shape_combo->itemData( idx ).toInt();
 			const bool is_flat         = ( st == ShapeType::Flat );
 			const bool is_slope_tunnel = ( st == ShapeType::SlopeTunnel );
 			const bool is_banked_turn  = ( st == ShapeType::BankedTurn || st == ShapeType::OffCamber );
 			const bool uses_ramp_len   = ( st == ShapeType::JumpRamp || st == ShapeType::Whoops );
 
-			set_row_visible( shape_height_spin, !is_flat );
-			if ( !is_flat ) {
+			set_row_visible( shape_combo, !track_mode );
+			set_row_visible( shape_height_spin, !track_mode && !is_flat );
+			if ( !track_mode && !is_flat ) {
 				if ( auto *lbl = qobject_cast<QLabel*>( form->labelForField( shape_height_spin ) ) )
 					lbl->setText( shape_height_label[idx] );
 				// Auto-fill slope height from selection when applicable
@@ -793,13 +878,14 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 						shape_height_spin->setValue( s.z1 - s.z0 );
 				}
 			}
-			set_row_visible( tunnel_height_spin, is_slope_tunnel );
-			set_row_visible( curve_radius_spin, is_banked_turn );
-			set_row_visible( banking_angle_spin, is_banked_turn );
-			set_row_visible( ramp_length_spin, uses_ramp_len );
+			set_row_visible( tunnel_height_spin, !track_mode && is_slope_tunnel );
+			set_row_visible( curve_radius_spin, !track_mode && is_banked_turn );
+			set_row_visible( banking_angle_spin, !track_mode && is_banked_turn );
+			set_row_visible( ramp_length_spin, !track_mode && uses_ramp_len );
 			// Terrace not applicable to flat tunnels (no slope to step),
 			// but valid for slope tunnels where the floor descends along Y
-			set_row_visible( terrace_spin, !is_flat && st != ShapeType::Tunnel );
+			set_row_visible( terrace_spin, track_mode || ( !is_flat && st != ShapeType::Tunnel ) );
+			update_track_section();
 		};
 
 		auto update_mask_controls = [&]( int idx ){
@@ -852,9 +938,17 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		};
 
 		// Wire signals
+		QObject::connect( generation_mode_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){
+			update_shape( shape_combo->currentIndex() );
+			rerender_preview_if_active();
+		} );
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_target_mode );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   update_advanced );
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), update_shape );
+		QObject::connect( track_section_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){
+			update_track_section();
+			rerender_preview_if_active();
+		} );
 		QObject::connect( mask_preset_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_mask_controls );
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( sq_advanced,  &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
@@ -872,6 +966,11 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( step_x_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( step_y_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( shape_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_width_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_shoulder_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_berm_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_feature_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( track_smooth_cb, &QCheckBox::toggled, [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( tunnel_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( curve_radius_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( banking_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );

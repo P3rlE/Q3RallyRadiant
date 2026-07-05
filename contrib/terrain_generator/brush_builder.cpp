@@ -201,6 +201,34 @@ static const char* choose_material( const TerrainMaterialSlots& slots, const Ter
 	return slots.base;
 }
 
+static const char* choose_surface_material( const TerrainMaterialSlots& slots, SurfaceKind surface ){
+	switch ( surface ) {
+	case SurfaceKind::Track:
+		if ( slots.track != nullptr && slots.track[0] != '\0' ) {
+			return slots.track;
+		}
+		break;
+	case SurfaceKind::Shoulder:
+		if ( slots.dirt != nullptr && slots.dirt[0] != '\0' ) {
+			return slots.dirt;
+		}
+		break;
+	default:
+		break;
+	}
+	return nullptr;
+}
+
+static SurfaceKind dominant_surface( SurfaceKind a, SurfaceKind b, SurfaceKind c ){
+	if ( a == SurfaceKind::Track || b == SurfaceKind::Track || c == SurfaceKind::Track ) {
+		return SurfaceKind::Track;
+	}
+	if ( a == SurfaceKind::Shoulder || b == SurfaceKind::Shoulder || c == SurfaceKind::Shoulder ) {
+		return SurfaceKind::Shoulder;
+	}
+	return SurfaceKind::Terrain;
+}
+
 // ---------------------------------------------------------------------------
 // Standard terrain
 // ---------------------------------------------------------------------------
@@ -210,6 +238,7 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
                              const TerrainMaterialSlots& material_slots,
                              const TerrainMaterialRules& material_rules,
                              bool split_diagonally, const TerrainBuildOptions& options,
+                             const SurfaceMap* surface_map,
                              std::vector<scene::Node*>* created_entities ){
 	UndoScope undo( "terrainGenerator.generateTerrain", options.undoable );
 
@@ -239,11 +268,22 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
 				auto it = height_map.find({ r2( kx ), r2( ky ) });
 				return it != height_map.end() ? it->second : min_z;
 			};
+			auto lookup_surface = [&]( double kx, double ky ) -> SurfaceKind {
+				if ( surface_map == nullptr ) {
+					return SurfaceKind::Auto;
+				}
+				auto it = surface_map->find({ r2( kx ), r2( ky ) });
+				return it != surface_map->end() ? it->second : SurfaceKind::Auto;
+			};
 
 			double z_bl = lookup( x,  y  );
 			double z_tl = lookup( x,  my );
 			double z_br = lookup( mx, y  );
 			double z_tr = lookup( mx, my );
+			SurfaceKind s_bl = lookup_surface( x,  y  );
+			SurfaceKind s_tl = lookup_surface( x,  my );
+			SurfaceKind s_br = lookup_surface( mx, y  );
+			SurfaceKind s_tr = lookup_surface( mx, my );
 
 			bool alt_dir = ( ( x_index + y_index ) % 2 ) != 0;
 			const double min_h = target.min_z;
@@ -262,8 +302,16 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
 				? triangle_slope_deg( mx, my, z_tr, mx, y, z_br, x, my, z_tl )
 				: triangle_slope_deg( mx, my, z_tr, mx, y, z_br, x, y, z_bl );
 
-			const char* top_tex_a = choose_material( effective_slots, material_rules, avg_a_pct, slope_a );
-			const char* top_tex_b = choose_material( effective_slots, material_rules, avg_b_pct, slope_b );
+			const SurfaceKind surface_a = !alt_dir ? dominant_surface( s_bl, s_tl, s_br ) : dominant_surface( s_tl, s_tr, s_bl );
+			const SurfaceKind surface_b = !alt_dir ? dominant_surface( s_tr, s_br, s_tl ) : dominant_surface( s_tr, s_br, s_bl );
+			const char* top_tex_a = choose_surface_material( effective_slots, surface_a );
+			const char* top_tex_b = choose_surface_material( effective_slots, surface_b );
+			if ( top_tex_a == nullptr ) {
+				top_tex_a = choose_material( effective_slots, material_rules, avg_a_pct, slope_a );
+			}
+			if ( top_tex_b == nullptr ) {
+				top_tex_b = choose_material( effective_slots, material_rules, avg_b_pct, slope_b );
+			}
 
 			insert_brush_into( entity, x, y, min_z, mx, my, base_max_z,
 			                   z_bl, z_tl, z_br, z_tr,
