@@ -17,6 +17,8 @@
 #include <QLabel>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QAbstractItemView>
 #include <QPushButton>
 #include <QFileDialog>
 #include <QImage>
@@ -77,6 +79,55 @@ static int make_auto_seed(){
 
 static double clamp01( double v ){
 	return std::max( 0.0, std::min( 1.0, v ) );
+}
+
+static QString track_section_name( TrackSectionType type ){
+	switch ( type ) {
+	case TrackSectionType::Straight:    return "Straight";
+	case TrackSectionType::CurveLeft:   return "Curve Left";
+	case TrackSectionType::CurveRight:  return "Curve Right";
+	case TrackSectionType::BankedTurn:  return "Banked Turn";
+	case TrackSectionType::SCurve:      return "S-Curve";
+	case TrackSectionType::Hairpin:     return "Hairpin";
+	case TrackSectionType::Jump:        return "Jump";
+	case TrackSectionType::Whoops:      return "Whoops";
+	}
+	return "Track Section";
+}
+
+static QString describe_track_segment( const TrackSectionOptions& options ){
+	QString text = QString( "%1 | w %2 | sh %3 | berm %4" )
+		.arg( track_section_name( options.type ) )
+		.arg( options.track_width, 0, 'f', 0 )
+		.arg( options.shoulder_width, 0, 'f', 0 )
+		.arg( options.berm_height, 0, 'f', 0 );
+
+	switch ( options.type ) {
+	case TrackSectionType::CurveLeft:
+	case TrackSectionType::CurveRight:
+	case TrackSectionType::BankedTurn:
+		text += QString( " | r %1 | arc %2 | bank %3" )
+			.arg( options.curve_radius, 0, 'f', 0 )
+			.arg( options.curve_arc_degrees, 0, 'f', 0 )
+			.arg( options.banking_angle_deg, 0, 'f', 0 );
+		break;
+	case TrackSectionType::SCurve:
+	case TrackSectionType::Hairpin:
+		text += QString( " | r %1 | bank %2" )
+			.arg( options.curve_radius, 0, 'f', 0 )
+			.arg( options.banking_angle_deg, 0, 'f', 0 );
+		break;
+	case TrackSectionType::Jump:
+	case TrackSectionType::Whoops:
+		text += QString( " | h %1 | len %2" )
+			.arg( options.feature_height, 0, 'f', 0 )
+			.arg( options.feature_length, 0, 'f', 0 );
+		break;
+	default:
+		break;
+	}
+
+	return text;
 }
 
 static MaskMap build_mask_map( const BrushData& target, double step_x, double step_y, MaskPreset preset, const QString& image_path ){
@@ -358,6 +409,36 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 		form = right_form;
 
+		auto *track_chain_list = new QListWidget;
+		track_chain_list->setSelectionMode( QAbstractItemView::SingleSelection );
+		track_chain_list->setMinimumHeight( 96 );
+		track_chain_list->setMaximumHeight( 140 );
+		form->addRow( "Segment Chain:", track_chain_list );
+
+		auto *track_chain_buttons = new QWidget;
+		auto *track_chain_button_layout = new QHBoxLayout( track_chain_buttons );
+		track_chain_button_layout->setContentsMargins( 0, 0, 0, 0 );
+		track_chain_button_layout->setSpacing( 4 );
+		auto *chain_add_btn = new QPushButton( "Add" );
+		auto *chain_remove_btn = new QPushButton( "Remove" );
+		auto *chain_up_btn = new QPushButton( "Up" );
+		auto *chain_down_btn = new QPushButton( "Down" );
+		auto *chain_log_btn = new QPushButton( "Log Ports" );
+		chain_add_btn->setToolTip( "Add the current track section to the chain." );
+		chain_remove_btn->setToolTip( "Remove the selected chain segment." );
+		chain_up_btn->setToolTip( "Move the selected chain segment up." );
+		chain_down_btn->setToolTip( "Move the selected chain segment down." );
+		chain_log_btn->setToolTip( "Write the chain port positions to the console." );
+		track_chain_list->setToolTip( "Double-click a segment to load it into the controls." );
+		track_chain_button_layout->addWidget( chain_add_btn );
+		track_chain_button_layout->addWidget( chain_remove_btn );
+		track_chain_button_layout->addWidget( chain_up_btn );
+		track_chain_button_layout->addWidget( chain_down_btn );
+		track_chain_button_layout->addWidget( chain_log_btn );
+		form->addRow( "", track_chain_buttons );
+
+		std::vector<TrackSectionOptions> track_chain_options;
+
 		// Noise type
 		auto *noise_combo = new ComboBox;
 		noise_combo->addItem( "Perlin Noise",     (int)NoiseType::Perlin );
@@ -552,7 +633,89 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				SceneChangeNotify();
 		};
 
-		// Shared validation + generation — returns true on success.
+		// Track option helpers shared by preview/generate and the chain editor.
+		auto read_track_options = [&]() -> TrackSectionOptions {
+			return TrackSectionOptions{
+				(TrackSectionType)track_section_combo->currentData().toInt(),
+				track_width_spin->value(),
+				track_shoulder_spin->value(),
+				track_berm_spin->value(),
+				banking_angle_spin->value(),
+				track_feature_height_spin->value(),
+				ramp_length_spin->value(),
+				curve_radius_spin->value(),
+				curve_arc_spin->value(),
+				track_smooth_cb->isChecked()
+			};
+		};
+
+		auto apply_track_options_to_controls = [&]( const TrackSectionOptions& options ){
+			const int section_index = track_section_combo->findData( (int)options.type );
+			if ( section_index >= 0 )
+				track_section_combo->setCurrentIndex( section_index );
+			track_width_spin->setValue( options.track_width );
+			track_shoulder_spin->setValue( options.shoulder_width );
+			track_berm_spin->setValue( options.berm_height );
+			banking_angle_spin->setValue( options.banking_angle_deg );
+			track_feature_height_spin->setValue( options.feature_height );
+			ramp_length_spin->setValue( options.feature_length );
+			curve_radius_spin->setValue( options.curve_radius );
+			curve_arc_spin->setValue( options.curve_arc_degrees );
+			track_smooth_cb->setChecked( options.smooth_track );
+		};
+
+		auto refresh_track_chain_list = [&](){
+			const int previous_row = track_chain_list->currentRow();
+			track_chain_list->clear();
+			for ( std::size_t i = 0; i < track_chain_options.size(); ++i ) {
+				track_chain_list->addItem( QString( "%1. %2" )
+					.arg( (int)i + 1 )
+					.arg( describe_track_segment( track_chain_options[i] ) ) );
+			}
+			if ( !track_chain_options.empty() ) {
+				const int row = std::clamp( previous_row, 0, (int)track_chain_options.size() - 1 );
+				track_chain_list->setCurrentRow( row );
+			}
+		};
+
+		auto selected_track_chain_row = [&]() -> int {
+			const int row = track_chain_list->currentRow();
+			if ( row < 0 || row >= (int)track_chain_options.size() )
+				return -1;
+			return row;
+		};
+
+		auto current_track_chain_segments = [&]() -> std::vector<TrackSectionOptions> {
+			if ( !track_chain_options.empty() )
+				return track_chain_options;
+			return { read_track_options() };
+		};
+
+		auto resolve_target_bounds = [&]( double step_x, double step_y ) -> BrushData {
+			if ( target_combo->currentIndex() == 1 ) {
+				return make_manual_brush_data( manual_w_spin->value(), manual_l_spin->value(), manual_h_spin->value() );
+			}
+
+			const bool use_ref = ref_captured && use_ref_cb->isChecked();
+			const SelBounds s = use_ref ? ref_bounds : query_sel( step_x < step_y ? step_x : step_y );
+			if ( s.valid ) {
+				BrushData target;
+				target.min_x = s.x0;
+				target.max_x = s.x1;
+				target.min_y = s.y0;
+				target.max_y = s.y1;
+				target.min_z = s.z0;
+				target.max_z = s.z0 + std::max( s.z1 - s.z0, 64.0 );
+				target.width_x = target.max_x - target.min_x;
+				target.length_y = target.max_y - target.min_y;
+				target.height_z = target.max_z - target.min_z;
+				return target;
+			}
+
+			return make_manual_brush_data( manual_w_spin->value(), manual_l_spin->value(), manual_h_spin->value() );
+		};
+
+		// Shared validation + generation.
 		auto do_generate = [&]( bool preview_mode ) -> bool {
 			if ( target_combo->currentIndex() == 0 && !query_sel().valid ) {
 				GlobalRadiant().m_pfnMessageBox( main_window,
@@ -580,7 +743,6 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double step_x    = advanced ? step_x_spin->value() : sq_combo->currentData().toInt();
 			const double step_y    = advanced ? step_y_spin->value() : sq_combo->currentData().toInt();
 			const ShapeType shape  = (ShapeType)shape_combo->currentData().toInt();
-			const TrackSectionType track_section = (TrackSectionType)track_section_combo->currentData().toInt();
 			const NoiseType noise  = (NoiseType)noise_combo->currentData().toInt();
 			const double tun_height = tunnel_height_spin->value();
 			const double variance     = variance_spin->value();
@@ -595,18 +757,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double curve_radius = curve_radius_spin->value();
 			const double bank_angle   = banking_angle_spin->value();
 			const double ramp_length  = ramp_length_spin->value();
-			const TrackSectionOptions track_options{
-				track_section,
-				track_width_spin->value(),
-				track_shoulder_spin->value(),
-				track_berm_spin->value(),
-				bank_angle,
-				track_feature_height_spin->value(),
-				ramp_length,
-				curve_radius,
-				curve_arc_spin->value(),
-				track_smooth_cb->isChecked()
-			};
+			const TrackSectionOptions track_options = read_track_options();
 			int seed = seed_spin->value();
 			if ( auto_seed_cb->isChecked() ) {
 				seed = make_auto_seed();
@@ -783,6 +934,74 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 		};
 
+		QObject::connect( chain_add_btn, &QPushButton::clicked, [&](){
+			track_chain_options.push_back( read_track_options() );
+			refresh_track_chain_list();
+			track_chain_list->setCurrentRow( (int)track_chain_options.size() - 1 );
+		} );
+		QObject::connect( chain_remove_btn, &QPushButton::clicked, [&](){
+			const int row = selected_track_chain_row();
+			if ( row < 0 )
+				return;
+			track_chain_options.erase( track_chain_options.begin() + row );
+			refresh_track_chain_list();
+			if ( !track_chain_options.empty() )
+				track_chain_list->setCurrentRow( std::min( row, (int)track_chain_options.size() - 1 ) );
+		} );
+		QObject::connect( chain_up_btn, &QPushButton::clicked, [&](){
+			const int row = selected_track_chain_row();
+			if ( row <= 0 )
+				return;
+			std::swap( track_chain_options[row], track_chain_options[row - 1] );
+			refresh_track_chain_list();
+			track_chain_list->setCurrentRow( row - 1 );
+		} );
+		QObject::connect( chain_down_btn, &QPushButton::clicked, [&](){
+			const int row = selected_track_chain_row();
+			if ( row < 0 || row + 1 >= (int)track_chain_options.size() )
+				return;
+			std::swap( track_chain_options[row], track_chain_options[row + 1] );
+			refresh_track_chain_list();
+			track_chain_list->setCurrentRow( row + 1 );
+		} );
+		QObject::connect( track_chain_list, &QListWidget::itemDoubleClicked, [&]( QListWidgetItem* ){
+			const int row = selected_track_chain_row();
+			if ( row >= 0 )
+				apply_track_options_to_controls( track_chain_options[row] );
+		} );
+		QObject::connect( chain_log_btn, &QPushButton::clicked, [&](){
+			if ( target_combo->currentIndex() == 0 && !query_sel().valid && !( ref_captured && use_ref_cb->isChecked() ) ) {
+				GlobalRadiant().m_pfnMessageBox( main_window,
+					"No valid brush is selected.\n\n"
+					"Please select a brush in the viewport first,\n"
+					"or switch the Target to \"Manual Size\".",
+					"Terrain Generator - No Selection",
+					EMessageBoxType::Error, 0 );
+				return;
+			}
+
+			const bool advanced = sq_advanced->isChecked();
+			const double step_x = advanced ? step_x_spin->value() : sq_combo->currentData().toInt();
+			const double step_y = advanced ? step_y_spin->value() : sq_combo->currentData().toInt();
+			BrushData target = resolve_target_bounds( step_x, step_y );
+			adjust_bounds_to_fit_grid( target, step_x, step_y );
+
+			std::vector<TrackSectionOptions> chain_options = current_track_chain_segments();
+			TrackChainSpec chain_spec;
+			chain_spec.start_port = make_track_start_port( target, chain_options.front() );
+			chain_spec.segments = chain_options;
+
+			const auto chain_segments = build_track_chain_segments( target, chain_spec );
+			globalOutputStream() << "TerrainGenerator: chain port log - segments: "
+			                     << chain_segments.size() << "\n";
+			for ( std::size_t i = 0; i < chain_segments.size(); ++i ) {
+				const TrackPort& end_port = chain_segments[i].end_port;
+				globalOutputStream() << "TerrainGenerator: segment " << ( i + 1 ) << " end ("
+				                     << end_port.x << ", " << end_port.y << ", " << end_port.z
+				                     << "), heading: " << end_port.heading_degrees << "\n";
+			}
+		} );
+
 		QObject::connect( preview_btn,  &QPushButton::clicked, [&](){
 			if ( !generating ) {
 				generating = true;
@@ -895,6 +1114,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			set_row_visible( track_berm_spin, track_mode );
 			set_row_visible( track_feature_height_spin, track_mode && uses_feature );
 			set_row_visible( track_smooth_cb, track_mode );
+			set_row_visible( track_chain_list, track_mode );
+			set_row_visible( track_chain_buttons, track_mode );
 			set_row_visible( track_min_spin, !track_mode );
 			set_row_visible( track_max_spin, !track_mode );
 			if ( track_mode ) {
