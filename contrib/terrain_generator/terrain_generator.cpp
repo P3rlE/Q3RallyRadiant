@@ -758,6 +758,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const double bank_angle   = banking_angle_spin->value();
 			const double ramp_length  = ramp_length_spin->value();
 			const TrackSectionOptions track_options = read_track_options();
+			const bool track_chain_mode = track_mode && !track_chain_options.empty();
+			const std::vector<TrackSectionOptions> chain_options = current_track_chain_segments();
 			int seed = seed_spin->value();
 			if ( auto_seed_cb->isChecked() ) {
 				seed = make_auto_seed();
@@ -875,7 +877,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const bool is_tunnel = !track_mode && ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
 
 			globalOutputStream() << "TerrainGenerator: generating "
-			                     << ( track_mode ? "track section" : ( is_tunnel ? "tunnel" : "terrain" ) )
+			                     << ( track_chain_mode ? "track chain" : ( track_mode ? "track section" : ( is_tunnel ? "tunnel" : "terrain" ) ) )
 			                     << " - bounds ("
 			                     << target.width_x << " x " << target.length_y << " x " << target.height_z
 			                     << "), step (" << step_x << " x " << step_y << ")"
@@ -887,20 +889,41 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			build_options.undoable = !preview_mode;
 
 			if ( track_mode ) {
-				auto maps = generate_track_section_maps( target, step_x, step_y, track_options, variance, frequency,
-				                                        mask_map, noise, terrace, post_process, seed );
-				TrackChainSpec chain_spec;
-				chain_spec.start_port = maps.start_port;
-				chain_spec.segments.push_back( track_options );
-				const auto chain_segments = build_track_chain_segments( target, chain_spec );
-				if ( !preview_mode && !chain_segments.empty() ) {
-					const TrackPort& end_port = chain_segments.back().end_port;
-					globalOutputStream() << "TerrainGenerator: track port end ("
-					                     << end_port.x << ", " << end_port.y << ", " << end_port.z
-					                     << "), heading: " << end_port.heading_degrees << "\n";
+				if ( track_chain_mode ) {
+					TrackPort current_port = make_track_start_port( target, chain_options.front() );
+					for ( std::size_t i = 0; i < chain_options.size(); ++i ) {
+						BrushData segment_target = make_track_segment_bounds( target, chain_options[i], current_port );
+						adjust_bounds_to_fit_grid( segment_target, step_x, step_y );
+						const MaskMap segment_mask_map = build_mask_map( segment_target, step_x, step_y, mask_preset, mask_image_edit->text() );
+						auto maps = generate_track_section_maps_from_port( segment_target, target, step_x, step_y, chain_options[i], current_port,
+						                                                  variance, frequency, segment_mask_map, noise, terrace,
+						                                                  post_process, seed + (int)i * 7919 );
+						build_terrain_brushes( segment_target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
+						                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
+						current_port = maps.end_port;
+					}
+					if ( !preview_mode ) {
+						globalOutputStream() << "TerrainGenerator: track chain end ("
+						                     << current_port.x << ", " << current_port.y << ", " << current_port.z
+						                     << "), heading: " << current_port.heading_degrees << "\n";
+					}
 				}
-				build_terrain_brushes( target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
-				                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
+				else {
+					auto maps = generate_track_section_maps( target, step_x, step_y, track_options, variance, frequency,
+					                                        mask_map, noise, terrace, post_process, seed );
+					TrackChainSpec chain_spec;
+					chain_spec.start_port = maps.start_port;
+					chain_spec.segments.push_back( track_options );
+					const auto chain_segments = build_track_chain_segments( target, chain_spec );
+					if ( !preview_mode && !chain_segments.empty() ) {
+						const TrackPort& end_port = chain_segments.back().end_port;
+						globalOutputStream() << "TerrainGenerator: track port end ("
+						                     << end_port.x << ", " << end_port.y << ", " << end_port.z
+						                     << "), heading: " << end_port.heading_degrees << "\n";
+					}
+					build_terrain_brushes( target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
+					                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
+				}
 			}
 			else if ( is_tunnel ) {
 				const double cave_height    = ( shape == ShapeType::SlopeTunnel ) ? tun_height   : shape_height;
@@ -938,6 +961,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			track_chain_options.push_back( read_track_options() );
 			refresh_track_chain_list();
 			track_chain_list->setCurrentRow( (int)track_chain_options.size() - 1 );
+			rerender_preview_if_active();
 		} );
 		QObject::connect( chain_remove_btn, &QPushButton::clicked, [&](){
 			const int row = selected_track_chain_row();
@@ -947,6 +971,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			refresh_track_chain_list();
 			if ( !track_chain_options.empty() )
 				track_chain_list->setCurrentRow( std::min( row, (int)track_chain_options.size() - 1 ) );
+			rerender_preview_if_active();
 		} );
 		QObject::connect( chain_up_btn, &QPushButton::clicked, [&](){
 			const int row = selected_track_chain_row();
@@ -955,6 +980,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			std::swap( track_chain_options[row], track_chain_options[row - 1] );
 			refresh_track_chain_list();
 			track_chain_list->setCurrentRow( row - 1 );
+			rerender_preview_if_active();
 		} );
 		QObject::connect( chain_down_btn, &QPushButton::clicked, [&](){
 			const int row = selected_track_chain_row();
@@ -963,6 +989,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			std::swap( track_chain_options[row], track_chain_options[row + 1] );
 			refresh_track_chain_list();
 			track_chain_list->setCurrentRow( row + 1 );
+			rerender_preview_if_active();
 		} );
 		QObject::connect( track_chain_list, &QListWidget::itemDoubleClicked, [&]( QListWidgetItem* ){
 			const int row = selected_track_chain_row();

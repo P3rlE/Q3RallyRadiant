@@ -146,6 +146,21 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
                                               const PostProcessSettings& post_process,
                                               int seed );
 
+BrushData make_track_segment_bounds( const BrushData& section_template,
+                                     const TrackSectionOptions& track_options,
+                                     const TrackPort& start_port );
+
+TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_target,
+                                                        const BrushData& section_template,
+                                                        double step_x, double step_y,
+                                                        const TrackSectionOptions& track_options,
+                                                        const TrackPort& start_port,
+                                                        double variance, double frequency,
+                                                        const MaskMap& mask_map,
+                                                        NoiseType noise_type, double terrace_step,
+                                                        const PostProcessSettings& post_process,
+                                                        int seed );
+
 TrackPort make_track_start_port( const BrushData& target, const TrackSectionOptions& track_options );
 
 TrackPort compute_track_end_port( const BrushData& target, const TrackSectionOptions& track_options,

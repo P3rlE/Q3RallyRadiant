@@ -6,6 +6,7 @@
 #include <numbers>
 #include <random>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -657,19 +658,128 @@ static double track_feature_height( TrackSectionType section_type, double progre
 	}
 }
 
-TrackSectionMaps generate_track_section_maps( const BrushData& target, double step_x, double step_y,
-                                              const TrackSectionOptions& track_options,
-                                              double variance, double frequency,
-                                              const MaskMap& mask_map,
-                                              NoiseType noise_type, double terrace_step,
-                                              const PostProcessSettings& post_process,
-                                              int seed ){
+static BrushData make_local_track_template( const BrushData& section_template ){
+	BrushData local = section_template;
+	local.min_x = -section_template.width_x * 0.5;
+	local.max_x =  section_template.width_x * 0.5;
+	local.min_y = 0.0;
+	local.max_y = section_template.length_y;
+	local.width_x = local.max_x - local.min_x;
+	local.length_y = local.max_y - local.min_y;
+	return local;
+}
+
+static BrushData make_local_track_sample_bounds( const BrushData& section_template,
+                                                 const TrackSectionOptions& track_options ){
+	BrushData local = make_local_track_template( section_template );
+	const double half_track = std::max( 0.0, track_options.track_width * 0.5 );
+	const double shoulder = std::max( 0.0, track_options.shoulder_width );
+	const double half_total = half_track + shoulder + std::max( 16.0, track_options.berm_height );
+	const double radius = std::max( track_options.curve_radius, half_total + 64.0 );
+
+	local.min_x = std::min( local.min_x, -half_total );
+	local.max_x = std::max( local.max_x,  half_total );
+
+	switch ( track_options.type ) {
+	case TrackSectionType::CurveLeft:
+	case TrackSectionType::BankedTurn:
+		local.min_x = std::min( local.min_x, -2.0 * radius - half_total );
+		local.max_x = std::max( local.max_x,  half_total );
+		local.max_y = std::max( local.max_y,  radius + half_total );
+		break;
+	case TrackSectionType::CurveRight:
+		local.min_x = std::min( local.min_x, -half_total );
+		local.max_x = std::max( local.max_x,  2.0 * radius + half_total );
+		local.max_y = std::max( local.max_y,  radius + half_total );
+		break;
+	case TrackSectionType::Hairpin:
+		local.min_x = std::min( local.min_x, -2.0 * radius - half_total );
+		local.max_x = std::max( local.max_x,  2.0 * radius + half_total );
+		break;
+	default:
+		break;
+	}
+
+	local.width_x = local.max_x - local.min_x;
+	local.length_y = local.max_y - local.min_y;
+	return local;
+}
+
+static void track_basis( const TrackPort& port, double& forward_x, double& forward_y, double& right_x, double& right_y ){
+	const double heading = degrees_to_radians( port.heading_degrees );
+	forward_x = std::cos( heading );
+	forward_y = std::sin( heading );
+	right_x = forward_y;
+	right_y = -forward_x;
+}
+
+static std::pair<double, double> local_to_world_track_point( const TrackPort& port, double local_x, double local_y ){
+	double forward_x, forward_y, right_x, right_y;
+	track_basis( port, forward_x, forward_y, right_x, right_y );
+	return {
+		port.x + right_x * local_x + forward_x * local_y,
+		port.y + right_y * local_x + forward_y * local_y
+	};
+}
+
+static std::pair<double, double> world_to_local_track_point( const TrackPort& port, double world_x, double world_y ){
+	double forward_x, forward_y, right_x, right_y;
+	track_basis( port, forward_x, forward_y, right_x, right_y );
+	const double dx = world_x - port.x;
+	const double dy = world_y - port.y;
+	return {
+		dx * right_x + dy * right_y,
+		dx * forward_x + dy * forward_y
+	};
+}
+
+BrushData make_track_segment_bounds( const BrushData& section_template,
+                                     const TrackSectionOptions& track_options,
+                                     const TrackPort& start_port ){
+	const BrushData local = make_local_track_sample_bounds( section_template, track_options );
+
+	BrushData world;
+	world.min_x =  std::numeric_limits<double>::max();
+	world.min_y =  std::numeric_limits<double>::max();
+	world.max_x = -std::numeric_limits<double>::max();
+	world.max_y = -std::numeric_limits<double>::max();
+	world.min_z = section_template.min_z;
+	world.max_z = section_template.max_z;
+	for ( const auto& p : {
+		local_to_world_track_point( start_port, local.min_x, local.min_y ),
+		local_to_world_track_point( start_port, local.min_x, local.max_y ),
+		local_to_world_track_point( start_port, local.max_x, local.min_y ),
+		local_to_world_track_point( start_port, local.max_x, local.max_y )
+	} ) {
+		world.min_x = std::min( world.min_x, p.first );
+		world.max_x = std::max( world.max_x, p.first );
+		world.min_y = std::min( world.min_y, p.second );
+		world.max_y = std::max( world.max_y, p.second );
+	}
+	world.width_x = world.max_x - world.min_x;
+	world.length_y = world.max_y - world.min_y;
+	world.height_z = world.max_z - world.min_z;
+	return world;
+}
+
+TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_target,
+                                                        const BrushData& section_template,
+                                                        double step_x, double step_y,
+                                                        const TrackSectionOptions& track_options,
+                                                        const TrackPort& start_port,
+                                                        double variance, double frequency,
+                                                        const MaskMap& mask_map,
+                                                        NoiseType noise_type, double terrace_step,
+                                                        const PostProcessSettings& post_process,
+                                                        int seed ){
 	TrackSectionMaps result;
-	result.start_port = make_track_start_port( target, track_options );
-	result.end_port = compute_track_end_port( target, track_options, result.start_port );
+	const BrushData local_target = make_local_track_template( section_template );
+	const BrushData local_bounds = make_local_track_sample_bounds( section_template, track_options );
+	result.start_port = start_port;
+	result.end_port = compute_track_end_port( local_target, track_options, result.start_port );
 	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
-	const int width = static_cast<int>( std::round( target.width_x / step_x ) ) + 1;
-	const int height = static_cast<int>( std::round( target.length_y / step_y ) ) + 1;
+	const int width = static_cast<int>( std::round( world_target.width_x / step_x ) ) + 1;
+	const int height = static_cast<int>( std::round( world_target.length_y / step_y ) ) + 1;
 	std::vector<double> grid;
 	grid.reserve( static_cast<std::size_t>( width ) * static_cast<std::size_t>( height ) );
 
@@ -680,13 +790,22 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 	double seed_x = rng.random_double() * 10000.0;
 	double seed_y = rng.random_double() * 10000.0;
 
-	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
-		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+	for ( double x = world_target.min_x; x <= world_target.max_x + 0.01; x += step_x ) {
+		for ( double y = world_target.min_y; y <= world_target.max_y + 0.01; y += step_y ) {
+			const auto local = world_to_local_track_point( start_port, x, y );
+			const double local_x = local.first;
+			const double local_y = local.second;
+			const bool inside_local = local_x >= local_bounds.min_x - 0.01
+			                       && local_x <= local_bounds.max_x + 0.01
+			                       && local_y >= local_bounds.min_y - 0.01
+			                       && local_y <= local_bounds.max_y + 0.01;
 			double progress = 0.0;
-			const double signed_dist = signed_track_distance( target, track_options.type, x, y, half_track, shoulder,
-			                                                  track_options.curve_radius, track_options.curve_arc_degrees, progress );
+			const double signed_dist = inside_local
+			                         ? signed_track_distance( local_target, track_options.type, local_x, local_y, half_track, shoulder,
+			                                                  track_options.curve_radius, track_options.curve_arc_degrees, progress )
+			                         : half_total + step_x;
 			const double abs_dist = std::abs( signed_dist );
-			const bool on_track = abs_dist <= half_track;
+			const bool on_track = inside_local && abs_dist <= half_track;
 			const bool on_shoulder = !on_track && abs_dist <= half_total;
 
 			SurfaceKind surface = SurfaceKind::Terrain;
@@ -702,7 +821,7 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 				lane_weight = 1.0 - smoothstep01( std::clamp( ( abs_dist - half_track ) / std::max( shoulder, 1.0 ), 0.0, 1.0 ) );
 			}
 
-			const double track_profile = track_feature_height( track_options.type, progress, y, target,
+			const double track_profile = track_feature_height( track_options.type, progress, local_y, local_target,
 			                                                  track_options.feature_height, track_options.feature_length );
 			double bank_z = 0.0;
 			if ( track_options.type == TrackSectionType::CurveLeft
@@ -720,7 +839,7 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 			const double berm_center = half_track + shoulder * 0.45;
 			const double berm_width = std::max( shoulder * 0.55, step_x );
 			const double berm_dist = std::abs( abs_dist - berm_center ) / berm_width;
-			const double berm_z = track_options.berm_height * std::max( 0.0, 1.0 - smoothstep01( berm_dist ) );
+			const double berm_z = inside_local ? track_options.berm_height * std::max( 0.0, 1.0 - smoothstep01( berm_dist ) ) : 0.0;
 
 			double noise_z = 0.0;
 			if ( variance > 0.0 ) {
@@ -740,7 +859,7 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 				}
 			}
 
-			double final_z = target.max_z + track_profile * lane_weight + bank_z * lane_weight + berm_z + noise_z;
+			double final_z = world_target.max_z + track_profile * lane_weight + bank_z * lane_weight + berm_z + noise_z;
 			if ( terrace_step > 0.0 && !on_track ) {
 				final_z = std::floor( final_z / terrace_step ) * terrace_step;
 			}
@@ -776,13 +895,26 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 	}
 
 	std::size_t index = 0;
-	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
-		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+	for ( double x = world_target.min_x; x <= world_target.max_x + 0.01; x += step_x ) {
+		for ( double y = world_target.min_y; y <= world_target.max_y + 0.01; y += step_y ) {
 			result.height_map[{ round2( x ), round2( y ) }] = std::round( grid[index++] );
 		}
 	}
 
 	return result;
+}
+
+TrackSectionMaps generate_track_section_maps( const BrushData& target, double step_x, double step_y,
+                                              const TrackSectionOptions& track_options,
+                                              double variance, double frequency,
+                                              const MaskMap& mask_map,
+                                              NoiseType noise_type, double terrace_step,
+                                              const PostProcessSettings& post_process,
+                                              int seed ){
+	return generate_track_section_maps_from_port( target, target, step_x, step_y, track_options,
+	                                             make_track_start_port( target, track_options ),
+	                                             variance, frequency, mask_map, noise_type, terrace_step,
+	                                             post_process, seed );
 }
 
 // ---------------------------------------------------------------------------
