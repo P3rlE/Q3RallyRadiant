@@ -649,7 +649,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			};
 		};
 
+		bool suppress_track_chain_sync = false;
+
 		auto apply_track_options_to_controls = [&]( const TrackSectionOptions& options ){
+			suppress_track_chain_sync = true;
 			const int section_index = track_section_combo->findData( (int)options.type );
 			if ( section_index >= 0 )
 				track_section_combo->setCurrentIndex( section_index );
@@ -662,6 +665,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			curve_radius_spin->setValue( options.curve_radius );
 			curve_arc_spin->setValue( options.curve_arc_degrees );
 			track_smooth_cb->setChecked( options.smooth_track );
+			suppress_track_chain_sync = false;
 		};
 
 		auto refresh_track_chain_list = [&](){
@@ -683,6 +687,17 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			if ( row < 0 || row >= (int)track_chain_options.size() )
 				return -1;
 			return row;
+		};
+
+		auto sync_selected_track_chain_segment = [&](){
+			if ( suppress_track_chain_sync )
+				return;
+			const int row = selected_track_chain_row();
+			if ( row < 0 )
+				return;
+			track_chain_options[row] = read_track_options();
+			refresh_track_chain_list();
+			track_chain_list->setCurrentRow( row );
 		};
 
 		auto current_track_chain_segments = [&]() -> std::vector<TrackSectionOptions> {
@@ -957,6 +972,11 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 		};
 
+		auto sync_track_chain_and_rerender = [&](){
+			sync_selected_track_chain_segment();
+			rerender_preview_if_active();
+		};
+
 		QObject::connect( chain_add_btn, &QPushButton::clicked, [&](){
 			track_chain_options.push_back( read_track_options() );
 			refresh_track_chain_list();
@@ -994,6 +1014,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( track_chain_list, &QListWidget::itemDoubleClicked, [&]( QListWidgetItem* ){
 			const int row = selected_track_chain_row();
 			if ( row >= 0 )
+				apply_track_options_to_controls( track_chain_options[row] );
+		} );
+		QObject::connect( track_chain_list, &QListWidget::currentRowChanged, [&]( int row ){
+			if ( row >= 0 && row < (int)track_chain_options.size() )
 				apply_track_options_to_controls( track_chain_options[row] );
 		} );
 		QObject::connect( chain_log_btn, &QPushButton::clicked, [&](){
@@ -1244,7 +1268,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( shape_combo,  QOverload<int>::of( &QComboBox::currentIndexChanged ), update_shape );
 		QObject::connect( track_section_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){
 			update_track_section();
-			rerender_preview_if_active();
+			sync_track_chain_and_rerender();
 		} );
 		QObject::connect( mask_preset_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), update_mask_controls );
 		QObject::connect( target_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){ rerender_preview_if_active(); } );
@@ -1263,16 +1287,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( step_x_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( step_y_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( shape_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( track_width_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( track_shoulder_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( track_berm_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( track_feature_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( track_smooth_cb, &QCheckBox::toggled, [&]( bool ){ rerender_preview_if_active(); } );
+		QObject::connect( track_width_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( track_shoulder_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( track_berm_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( track_feature_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( track_smooth_cb, &QCheckBox::toggled, [&]( bool ){ sync_track_chain_and_rerender(); } );
 		QObject::connect( tunnel_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( curve_radius_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( curve_arc_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( banking_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
-		QObject::connect( ramp_length_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( curve_radius_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( curve_arc_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( banking_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
+		QObject::connect( ramp_length_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ sync_track_chain_and_rerender(); } );
 		QObject::connect( terrace_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( laplacian_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){
 			sync_post_process_preset();
