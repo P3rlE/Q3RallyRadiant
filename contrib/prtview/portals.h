@@ -23,6 +23,7 @@
 #include "renderable.h"
 #include "math/vector.h"
 #include "string/string.h"
+#include <cstdint>
 #include <vector>
 
 
