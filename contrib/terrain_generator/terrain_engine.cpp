@@ -465,23 +465,60 @@ static double smoothstep01( double v ){
 	return t * t * ( 3.0 - 2.0 * t );
 }
 
+static double normalize_angle_positive( double angle ){
+	while ( angle < 0.0 ) {
+		angle += 2.0 * std::numbers::pi;
+	}
+	while ( angle >= 2.0 * std::numbers::pi ) {
+		angle -= 2.0 * std::numbers::pi;
+	}
+	return angle;
+}
+
+static double signed_arc_distance( const BrushData& target, double x, double y,
+                                   double radius, double arc_degrees, bool left,
+                                   double& progress ){
+	const double safe_radius = std::max( radius, 64.0 );
+	const double arc_rad = std::clamp( arc_degrees, 15.0, 180.0 ) * std::numbers::pi / 180.0;
+	const double start_x = ( target.min_x + target.max_x ) * 0.5;
+	const double start_y = target.min_y;
+	const double center_x = start_x + ( left ? -safe_radius : safe_radius );
+	const double center_y = start_y;
+	const double start_angle = left ? 0.0 : std::numbers::pi;
+	const double point_angle = std::atan2( y - center_y, x - center_x );
+	const double raw_delta = left
+	                       ? normalize_angle_positive( point_angle - start_angle )
+	                       : normalize_angle_positive( start_angle - point_angle );
+	const bool before_start = raw_delta > std::numbers::pi;
+	const double arc_delta = before_start ? 0.0 : raw_delta;
+	const double clamped_delta = std::clamp( arc_delta, 0.0, arc_rad );
+	const double centerline_angle = left ? start_angle + clamped_delta : start_angle - clamped_delta;
+	const double cx = center_x + safe_radius * std::cos( centerline_angle );
+	const double cy = center_y + safe_radius * std::sin( centerline_angle );
+	progress = arc_rad > 0.0 ? clamped_delta / arc_rad : 0.0;
+
+	if ( !before_start && raw_delta <= arc_rad ) {
+		return std::sqrt( ( x - center_x ) * ( x - center_x ) + ( y - center_y ) * ( y - center_y ) ) - safe_radius;
+	}
+	return std::sqrt( ( x - cx ) * ( x - cx ) + ( y - cy ) * ( y - cy ) );
+}
+
 static double signed_track_distance( const BrushData& target, TrackSectionType section_type,
                                      double x, double y, double half_track, double half_shoulder,
+                                     double curve_radius, double curve_arc_degrees,
                                      double& progress ){
 	const double ny = target.length_y > 0.0 ? ( y - target.min_y ) / target.length_y : 0.0;
 	const double center_x = ( target.min_x + target.max_x ) * 0.5;
 	progress = ny;
 
 	switch ( section_type ) {
+	case TrackSectionType::CurveLeft:
+		return signed_arc_distance( target, x, y, curve_radius, curve_arc_degrees, true, progress );
+	case TrackSectionType::CurveRight:
+		return signed_arc_distance( target, x, y, curve_radius, curve_arc_degrees, false, progress );
 	case TrackSectionType::BankedTurn: {
-		const double safe_radius = std::max( target.width_x * 0.45, half_track + half_shoulder + 64.0 );
-		const double cx = target.min_x + safe_radius;
-		const double cy = target.min_y + safe_radius;
-		const double dx = x - cx;
-		const double dy = y - cy;
-		const double r = std::sqrt( dx * dx + dy * dy );
-		progress = std::clamp( std::atan2( dy, dx ) / ( std::numbers::pi * 0.5 ), 0.0, 1.0 );
-		return r - safe_radius;
+		const double safe_radius = std::max( curve_radius, half_track + half_shoulder + 64.0 );
+		return signed_arc_distance( target, x, y, safe_radius, curve_arc_degrees, true, progress );
 	}
 	case TrackSectionType::SCurve: {
 		const double amplitude = std::max( 0.0, target.width_x * 0.5 - half_track - half_shoulder );
@@ -489,7 +526,7 @@ static double signed_track_distance( const BrushData& target, TrackSectionType s
 		return x - curve_center;
 	}
 	case TrackSectionType::Hairpin: {
-		const double radius = std::max( half_track + half_shoulder + 64.0, std::min( target.width_x, target.length_y ) * 0.32 );
+		const double radius = std::max( half_track + half_shoulder + 64.0, curve_radius );
 		const double cx = center_x;
 		const double cy = target.max_y - radius;
 		const double dx = x - cx;
@@ -551,7 +588,8 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
 		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
 			double progress = 0.0;
-			const double signed_dist = signed_track_distance( target, track_options.type, x, y, half_track, shoulder, progress );
+			const double signed_dist = signed_track_distance( target, track_options.type, x, y, half_track, shoulder,
+			                                                  track_options.curve_radius, track_options.curve_arc_degrees, progress );
 			const double abs_dist = std::abs( signed_dist );
 			const bool on_track = abs_dist <= half_track;
 			const bool on_shoulder = !on_track && abs_dist <= half_total;
@@ -572,7 +610,9 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
 			const double track_profile = track_feature_height( track_options.type, progress, y, target,
 			                                                  track_options.feature_height, track_options.feature_length );
 			double bank_z = 0.0;
-			if ( track_options.type == TrackSectionType::BankedTurn
+			if ( track_options.type == TrackSectionType::CurveLeft
+			  || track_options.type == TrackSectionType::CurveRight
+			  || track_options.type == TrackSectionType::BankedTurn
 			  || track_options.type == TrackSectionType::SCurve
 			  || track_options.type == TrackSectionType::Hairpin ) {
 				double direction = 1.0;

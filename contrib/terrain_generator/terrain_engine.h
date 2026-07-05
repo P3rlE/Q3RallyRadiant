@@ -55,11 +55,13 @@ enum class NoiseType {
 
 enum class TrackSectionType {
 	Straight = 0,
-	BankedTurn = 1,
-	SCurve = 2,
-	Hairpin = 3,
-	Jump = 4,
-	Whoops = 5
+	CurveLeft = 1,
+	CurveRight = 2,
+	BankedTurn = 3,
+	SCurve = 4,
+	Hairpin = 5,
+	Jump = 6,
+	Whoops = 7
 };
 
 struct PostProcessSettings
@@ -78,6 +80,8 @@ struct TrackSectionOptions
 	double banking_angle_deg = 10.0;
 	double feature_height = 128.0;
 	double feature_length = 512.0;
+	double curve_radius = 768.0;
+	double curve_arc_degrees = 90.0;
 	bool smooth_track = true;
 };
 

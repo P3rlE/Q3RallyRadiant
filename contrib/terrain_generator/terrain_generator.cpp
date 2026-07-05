@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
 #include <QCheckBox>
 #include <QLineEdit>
@@ -183,8 +184,20 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QDialog dialog( main_window, Qt::Dialog | Qt::WindowCloseButtonHint );
 		dialog.setWindowTitle( "Terrain Generator" );
 
-		dialog.setMinimumWidth( 420 );
-		auto *form = new QFormLayout( &dialog );
+		dialog.setMinimumWidth( 840 );
+		auto *dialog_layout = new QVBoxLayout( &dialog );
+		auto *columns_widget = new QWidget;
+		auto *columns_layout = new QHBoxLayout( columns_widget );
+		columns_layout->setContentsMargins( 0, 0, 0, 0 );
+		columns_layout->setSpacing( 18 );
+		auto *left_column = new QWidget;
+		auto *right_column = new QWidget;
+		auto *left_form = new QFormLayout( left_column );
+		auto *right_form = new QFormLayout( right_column );
+		columns_layout->addWidget( left_column );
+		columns_layout->addWidget( right_column );
+		dialog_layout->addWidget( columns_widget );
+		QFormLayout *form = left_form;
 
 		// Target mode
 		auto *target_combo = new ComboBox;
@@ -296,6 +309,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 		auto *track_section_combo = new ComboBox;
 		track_section_combo->addItem( "Straight",    (int)TrackSectionType::Straight );
+		track_section_combo->addItem( "Curve Left",  (int)TrackSectionType::CurveLeft );
+		track_section_combo->addItem( "Curve Right", (int)TrackSectionType::CurveRight );
 		track_section_combo->addItem( "Banked Turn", (int)TrackSectionType::BankedTurn );
 		track_section_combo->addItem( "S-Curve",     (int)TrackSectionType::SCurve );
 		track_section_combo->addItem( "Hairpin",     (int)TrackSectionType::Hairpin );
@@ -328,6 +343,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		auto *curve_radius_spin = new DoubleSpinBox( 64, 8192, 640, 2, 16 );
 		form->addRow( "Curve Radius:", curve_radius_spin );
 
+		auto *curve_arc_spin = new DoubleSpinBox( 15, 180, 90, 1, 5 );
+		form->addRow( "Curve Arc (Â°):", curve_arc_spin );
+
 		auto *banking_angle_spin = new DoubleSpinBox( 0, 45, 12, 1, 1 );
 		form->addRow( "Bank Angle (°):", banking_angle_spin );
 
@@ -337,6 +355,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		// Terrace step — hidden for Flat
 		auto *terrace_spin = new DoubleSpinBox( 0, 512, 0, 2, 8 );
 		form->addRow( "Terrace Step:", terrace_spin );
+
+		form = right_form;
 
 		// Noise type
 		auto *noise_combo = new ComboBox;
@@ -502,10 +522,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		btn_layout->addStretch();
 		form->addRow( btn_widget );
 
+		auto field_label = [&]( QWidget *w ) -> QWidget* {
+			if ( auto *lbl = left_form->labelForField( w ) )
+				return lbl;
+			return right_form->labelForField( w );
+		};
+
 		// Helper: show/hide a form row (widget + its label)
 		auto set_row_visible = [&]( QWidget *w, bool visible ){
 			w->setVisible( visible );
-			if ( auto *lbl = form->labelForField( w ) )
+			if ( auto *lbl = field_label( w ) )
 				lbl->setVisible( visible );
 		};
 
@@ -577,6 +603,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				bank_angle,
 				track_feature_height_spin->value(),
 				ramp_length,
+				curve_radius,
+				curve_arc_spin->value(),
 				track_smooth_cb->isChecked()
 			};
 			int seed = seed_spin->value();
@@ -833,7 +861,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		auto update_track_section = [&](){
 			const bool track_mode = is_track_mode();
 			const TrackSectionType st = (TrackSectionType)track_section_combo->currentData().toInt();
-			const bool uses_bank = st == TrackSectionType::BankedTurn
+			const bool uses_curve = st == TrackSectionType::CurveLeft
+			                     || st == TrackSectionType::CurveRight
+			                     || st == TrackSectionType::BankedTurn
+			                     || st == TrackSectionType::Hairpin;
+			const bool uses_arc = st == TrackSectionType::CurveLeft
+			                   || st == TrackSectionType::CurveRight
+			                   || st == TrackSectionType::BankedTurn;
+			const bool uses_bank = st == TrackSectionType::CurveLeft
+			                    || st == TrackSectionType::CurveRight
+			                    || st == TrackSectionType::BankedTurn
 			                    || st == TrackSectionType::SCurve
 			                    || st == TrackSectionType::Hairpin;
 			const bool uses_feature = st == TrackSectionType::Hairpin
@@ -853,7 +890,8 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			if ( track_mode ) {
 				set_row_visible( banking_angle_spin, uses_bank );
 				set_row_visible( ramp_length_spin, uses_length );
-				set_row_visible( curve_radius_spin, false );
+				set_row_visible( curve_radius_spin, uses_curve );
+				set_row_visible( curve_arc_spin, uses_arc );
 			}
 		};
 
@@ -869,7 +907,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			set_row_visible( shape_combo, !track_mode );
 			set_row_visible( shape_height_spin, !track_mode && !is_flat );
 			if ( !track_mode && !is_flat ) {
-				if ( auto *lbl = qobject_cast<QLabel*>( form->labelForField( shape_height_spin ) ) )
+				if ( auto *lbl = qobject_cast<QLabel*>( field_label( shape_height_spin ) ) )
 					lbl->setText( shape_height_label[idx] );
 				// Auto-fill slope height from selection when applicable
 				if ( slope_derived() ) {
@@ -880,6 +918,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 			set_row_visible( tunnel_height_spin, !track_mode && is_slope_tunnel );
 			set_row_visible( curve_radius_spin, !track_mode && is_banked_turn );
+			set_row_visible( curve_arc_spin, false );
 			set_row_visible( banking_angle_spin, !track_mode && is_banked_turn );
 			set_row_visible( ramp_length_spin, !track_mode && uses_ramp_len );
 			// Terrace not applicable to flat tunnels (no slope to step),
@@ -973,6 +1012,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( track_smooth_cb, &QCheckBox::toggled, [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( tunnel_height_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( curve_radius_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
+		QObject::connect( curve_arc_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( banking_angle_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( ramp_length_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 		QObject::connect( terrace_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
