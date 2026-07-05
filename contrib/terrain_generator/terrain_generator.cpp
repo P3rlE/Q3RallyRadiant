@@ -738,6 +738,16 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			if ( track_mode ) {
 				auto maps = generate_track_section_maps( target, step_x, step_y, track_options, variance, frequency,
 				                                        mask_map, noise, terrace, post_process, seed );
+				TrackChainSpec chain_spec;
+				chain_spec.start_port = maps.start_port;
+				chain_spec.segments.push_back( track_options );
+				const auto chain_segments = build_track_chain_segments( target, chain_spec );
+				if ( !chain_segments.empty() ) {
+					const TrackPort& end_port = chain_segments.back().end_port;
+					globalOutputStream() << "TerrainGenerator: track port end ("
+					                     << end_port.x << ", " << end_port.y << ", " << end_port.z
+					                     << "), heading: " << end_port.heading_degrees << "\n";
+				}
 				build_terrain_brushes( target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
 				                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
 			}

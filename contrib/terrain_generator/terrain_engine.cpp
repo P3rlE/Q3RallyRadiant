@@ -541,6 +541,99 @@ static double signed_track_distance( const BrushData& target, TrackSectionType s
 	}
 }
 
+static double degrees_to_radians( double degrees ){
+	return degrees * std::numbers::pi / 180.0;
+}
+
+static double normalize_degrees( double degrees ){
+	while ( degrees < 0.0 ) {
+		degrees += 360.0;
+	}
+	while ( degrees >= 360.0 ) {
+		degrees -= 360.0;
+	}
+	return degrees;
+}
+
+TrackPort make_track_start_port( const BrushData& target, const TrackSectionOptions& track_options ){
+	TrackPort port;
+	port.x = ( target.min_x + target.max_x ) * 0.5;
+	port.y = target.min_y;
+	port.z = target.max_z;
+	port.heading_degrees = 90.0;
+	port.track_width = track_options.track_width;
+	port.banking_angle_degrees = 0.0;
+	return port;
+}
+
+TrackPort compute_track_end_port( const BrushData& target, const TrackSectionOptions& track_options,
+                                  const TrackPort& start_port ){
+	TrackPort end = start_port;
+	const double heading = degrees_to_radians( start_port.heading_degrees );
+	const double forward_x = std::cos( heading );
+	const double forward_y = std::sin( heading );
+	const double left_x = -forward_y;
+	const double left_y = forward_x;
+	const double length = std::max( 0.0, target.length_y );
+	const double arc_degrees = std::clamp( track_options.curve_arc_degrees, 15.0, 180.0 );
+	const double radius = std::max( track_options.curve_radius, track_options.track_width * 0.5 + track_options.shoulder_width + 64.0 );
+
+	auto advance_straight = [&](){
+		end.x += forward_x * length;
+		end.y += forward_y * length;
+	};
+	auto advance_arc = [&]( bool turn_left, double turn_degrees ){
+		const double side = turn_left ? 1.0 : -1.0;
+		const double turn_radians = degrees_to_radians( turn_degrees );
+		const double center_x = start_port.x + left_x * radius * side;
+		const double center_y = start_port.y + left_y * radius * side;
+		const double radial_x = start_port.x - center_x;
+		const double radial_y = start_port.y - center_y;
+		const double cos_a = std::cos( turn_radians * side );
+		const double sin_a = std::sin( turn_radians * side );
+		end.x = center_x + radial_x * cos_a - radial_y * sin_a;
+		end.y = center_y + radial_x * sin_a + radial_y * cos_a;
+		end.heading_degrees = normalize_degrees( start_port.heading_degrees + turn_degrees * side );
+	};
+
+	switch ( track_options.type ) {
+	case TrackSectionType::CurveLeft:
+	case TrackSectionType::BankedTurn:
+		advance_arc( true, arc_degrees );
+		break;
+	case TrackSectionType::CurveRight:
+		advance_arc( false, arc_degrees );
+		break;
+	case TrackSectionType::Hairpin:
+		advance_arc( true, 180.0 );
+		break;
+	default:
+		advance_straight();
+		break;
+	}
+
+	end.z = target.max_z;
+	end.track_width = track_options.track_width;
+	end.banking_angle_degrees = 0.0;
+	return end;
+}
+
+std::vector<TrackSegmentSpec> build_track_chain_segments( const BrushData& target,
+                                                          const TrackChainSpec& chain_spec ){
+	std::vector<TrackSegmentSpec> result;
+	result.reserve( chain_spec.segments.size() );
+	TrackPort current_port = chain_spec.start_port;
+	for ( const TrackSectionOptions& options : chain_spec.segments ) {
+		TrackSegmentSpec segment;
+		segment.options = options;
+		segment.start_port = current_port;
+		segment.end_port = compute_track_end_port( target, options, current_port );
+		result.push_back( segment );
+		current_port = segment.end_port;
+	}
+	return result;
+}
+
 static double track_feature_height( TrackSectionType section_type, double progress,
                                     double y, const BrushData& target,
                                     double feature_height, double feature_length ){
@@ -572,6 +665,8 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
                                               const PostProcessSettings& post_process,
                                               int seed ){
 	TrackSectionMaps result;
+	result.start_port = make_track_start_port( target, track_options );
+	result.end_port = compute_track_end_port( target, track_options, result.start_port );
 	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
 	const int width = static_cast<int>( std::round( target.width_x / step_x ) ) + 1;
 	const int height = static_cast<int>( std::round( target.length_y / step_y ) ) + 1;

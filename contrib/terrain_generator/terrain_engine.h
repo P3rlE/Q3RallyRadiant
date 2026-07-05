@@ -5,6 +5,7 @@
 #include <map>
 #include <utility>
 #include <tuple>
+#include <vector>
 
 using HeightMap   = std::map<std::pair<double, double>, double>;
 using WallMap     = std::map<std::pair<double, double>, double>;
@@ -85,10 +86,35 @@ struct TrackSectionOptions
 	bool smooth_track = true;
 };
 
+struct TrackPort
+{
+	double x = 0.0;
+	double y = 0.0;
+	double z = 0.0;
+	double heading_degrees = 90.0;
+	double track_width = 384.0;
+	double banking_angle_degrees = 0.0;
+};
+
+struct TrackSegmentSpec
+{
+	TrackSectionOptions options;
+	TrackPort start_port;
+	TrackPort end_port;
+};
+
+struct TrackChainSpec
+{
+	TrackPort start_port;
+	std::vector<TrackSectionOptions> segments;
+};
+
 struct TrackSectionMaps
 {
 	HeightMap height_map;
 	SurfaceMap surface_map;
+	TrackPort start_port;
+	TrackPort end_port;
 };
 
 BrushData make_manual_brush_data( double width, double length, double height );
@@ -119,3 +145,11 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
                                               NoiseType noise_type, double terrace_step,
                                               const PostProcessSettings& post_process,
                                               int seed );
+
+TrackPort make_track_start_port( const BrushData& target, const TrackSectionOptions& track_options );
+
+TrackPort compute_track_end_port( const BrushData& target, const TrackSectionOptions& track_options,
+                                  const TrackPort& start_port );
+
+std::vector<TrackSegmentSpec> build_track_chain_segments( const BrushData& target,
+                                                          const TrackChainSpec& chain_spec );
