@@ -725,7 +725,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 			globalOutputStream() << "TerrainGenerator: generating "
 			                     << ( track_mode ? "track section" : ( is_tunnel ? "tunnel" : "terrain" ) )
-			                     << " — bounds ("
+			                     << " - bounds ("
 			                     << target.width_x << " x " << target.length_y << " x " << target.height_z
 			                     << "), step (" << step_x << " x " << step_y << ")"
 			                     << ", seed: " << seed
@@ -742,7 +742,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				chain_spec.start_port = maps.start_port;
 				chain_spec.segments.push_back( track_options );
 				const auto chain_segments = build_track_chain_segments( target, chain_spec );
-				if ( !chain_segments.empty() ) {
+				if ( !preview_mode && !chain_segments.empty() ) {
 					const TrackPort& end_port = chain_segments.back().end_port;
 					globalOutputStream() << "TerrainGenerator: track port end ("
 					                     << end_port.x << ", " << end_port.y << ", " << end_port.z
