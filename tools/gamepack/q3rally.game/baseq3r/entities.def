@@ -317,7 +317,7 @@ Target this entity with a misc_model to have the model attached to the entity (s
 A static entity that is removed when it receives a set amount of damage.
 -------- KEYS --------
 health : The entire entity is removed once this amount of damages has been inflicted to it.
-count : The entity will spew out this number of chunks of debris when it's broken (default = 0).
+count : The entity will spew out this number of chunks of debris when it's broken (default = 0, or 10 when a debris spawnflag is set).
 target : Targetted entity will be triggered once the func_breakable is destroyed.
 target2 : Targetted entity will be triggered once the func_breakable is destroyed.
 light : constantLight radius of .md3 model included with entity. Has no effect on the entity's brushes (default 0).
@@ -2521,8 +2521,11 @@ Q3Rally Entities
 =================================
 //
 
-/*QUAKED rally_scripted_object (0 .9 .1) ?
-
+/*
+rally_scripted_object is declared in entities.ent. Its typed model field is
+required there so Q3RallyRadiant opens the model picker when the entity is placed.
+Keeping a second QUAKED declaration here would cause Radiant to ignore the later
+XML entity definition.
 */
 
 /*QUAKED rally_startfinish (0 .9 .1) ?
@@ -2554,6 +2557,13 @@ SPAWNFLAGS
 
 /*QUAKED rally_weather_snow (.5 .5 .5) ?
 "number"	number of particles to draw, usually 200-1000
+
+The snow volume also marks the road beneath it as dynamically snow-covered at runtime:
+vehicle grip uses packed-snow friction and tires emit snow spray without requiring SURF_SNOW on the road shader.
+
+Server weather timing is controlled globally with:
+g_dynamicWeather 1/0, g_weatherInitialChance, g_weatherOnMinTime, g_weatherOnMaxTime,
+g_weatherOffMinTime and g_weatherOffMaxTime.
 */
 
 /*QUAKED rally_weather_rain (.5 .5 .5) ? DISABLE_SPLASH
@@ -2561,7 +2571,14 @@ SPAWNFLAGS
 
 SPAWNFLAGS
 
-disable_splash turns off splashes, improving framerates since there is not as much to calculate or draw. 
+disable_splash turns off visual impact splashes, improving framerates since there is not as much to calculate or draw.
+
+The rain volume also marks the road beneath it as dynamically wet at runtime:
+vehicle grip is reduced and tires emit spray without requiring SURF_WET on the road shader.
+
+Server weather timing is controlled globally with:
+g_dynamicWeather 1/0, g_weatherInitialChance, g_weatherOnMinTime, g_weatherOnMaxTime,
+g_weatherOffMinTime and g_weatherOffMaxTime.
 */
 
 /*QUAKED item_armor_green (0 .7 0) (-16 -16 -16) (16 16 16) SUSPENDED
