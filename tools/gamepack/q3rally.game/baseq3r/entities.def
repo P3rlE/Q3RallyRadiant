@@ -2638,15 +2638,15 @@ model="models/powerups/quad/quad.md3"*/
 //AUTOBALL
 
 /*QUAKED autoball_ball (1 .5 0) (-75 -75 -75) (75 75 75)
-Autoball game ball (prototype). Its origin is the kick-off spot; the ball drops to the floor on spawn.
-Needs the Bullet backend (g_scriptedObjectBullet 1). Test commands: ball_spawn, ball_reset, ball_remove (cheats), g_autoballDebug 1.
+Autoball match ball (g_gametype 23). Exactly one per map; its origin is the centre kick-off spot, the ball is put back here at every kick-off. Place it about one radius above the floor.
+Needs the Bullet backend (g_scriptedObjectBullet 1, the default). The server mutators g_autoballBalls, g_autoballBallScale and g_autoballBallGravity work on top of these keys.
 -------- KEYS --------
 "radius" ball radius in units (default 75; the default model is made for 75)
 "mass" ball mass (default 400; a car is about 1400)
 "elasticity" bounciness 0..1 (default 0.6)
 "friction" surface friction (default 0.4)
 "rolling_friction" how fast a rolling ball slows down (default 0.02)
-"vehicle_impact_scale" shot strength 0..2 (default 1.0)
+"vehicle_impact_scale" shot strength 0..2, multiplied with g_autoballImpactScale (default 1.0)
 "vehicle_vertical_scale" 0..1, flattens car hits; car contacts point 35-45 deg up, 0.45 gives about 20 deg (default 0.45)
 "vehicle_lift" 0..0.9, minimum upward share of a car hit (default 0.15)
 "max_speed" speed cap in units/s, 35.66 units = 1 m (default 3000)
@@ -2655,9 +2655,10 @@ model="models/autoball/ball.md3"*/
 
 
 /*QUAKED autoball_goal (1 .5 0) ?
-Autoball goal volume (brush entity, use common/trigger). The team that SCORES is the other team: a ball whose centre enters a "red" goal counts for blue.
-Build one per team. Start the brush one ball radius (75 units) behind the goal line so the whole ball has to cross the line.
-Kick-off spots: team_CTF_redplayer / team_CTF_blueplayer. Respawn after a reset: team_CTF_redspawn / team_CTF_bluespawn.
+Autoball goal volume (brush entity, use common/trigger; it is never solid). One per team. The team that SCORES is the other team: a ball whose centre enters the "red" goal counts for blue.
+Start the brush one ball radius (75 units) behind the goal line so the whole ball has to cross the line.
+Also needed: team_CTF_redplayer / team_CTF_blueplayer (kick-off spots), team_CTF_redspawn / team_CTF_bluespawn (respawn after a demolition), rally_item_turbo pickups (the only items left in Autoball), an .aas file for bots.
+.arena type: q3r_autoball. Entity gametype key: autoball.
 -------- KEYS --------
 "team" team that defends this goal: red or blue (default red)*/
 
