@@ -2614,6 +2614,10 @@ model="models/rearfire/rf_smoke.md3"*/
 model="models/powerups/shield/shield.md3"*/
 
 /*QUAKED rally_item_turbo (.3 .3 1) (-16 -16 -16) (16 16 16) SUSPENDED
+Turbo pickup.
+-------- KEYS --------
+"count" turbo given in milliseconds (default 5000)
+"wait" respawn time in seconds (default 120; Autoball arenas use about 10 for big and 4 for small pickups)
 model="models/powerups/turbo/turbo.md3"*/
 
 /*QUAKED rally_item_env (.3 .3 1) (-16 -16 -16) (16 16 16) SUSPENDED
