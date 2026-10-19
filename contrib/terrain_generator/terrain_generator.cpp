@@ -27,6 +27,16 @@
 #include <QProgressDialog>
 #include <QCoreApplication>
 #include <QSettings>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
+#include <QProcess>
+#include <QElapsedTimer>
+#include <QGroupBox>
+#include <QGridLayout>
+#include <QDialogButtonBox>
+#include <QIODevice>
 #include <QVariantMap>
 #include <QVariantList>
 #include <QSignalBlocker>
@@ -304,14 +314,392 @@ const char* getName(){
 }
 
 const char* getCommandList(){
-	return "About;Generate Terrain";
+	return "About;Generate Terrain;Generate Arena File;Generate Levelshot";
 }
 
 const char* getCommandTitleList(){
 	return "";
 }
 
+struct CurrentMapContext
+{
+	QString map_name;
+	QFileInfo source_file;
+	QDir game_directory;
+};
+
+static bool get_current_map_context( CurrentMapContext& context, QString& error ){
+	const char* map_path = GlobalRadiant().getMapName();
+	if ( !map_path || !*map_path ) {
+		error = "Open and save a map before using this tool.";
+		return false;
+	}
+
+	context.source_file = QFileInfo( QString::fromLocal8Bit( map_path ) );
+	if ( !context.source_file.exists() || !context.source_file.isFile() || context.source_file.suffix().compare( "map", Qt::CaseInsensitive ) != 0 ) {
+		error = "Save the current map to a .map file first.";
+		return false;
+	}
+
+	context.map_name = context.source_file.completeBaseName();
+	if ( context.map_name.isEmpty() ) {
+		error = "The current map has no valid file name.";
+		return false;
+	}
+	for ( const QChar character : context.map_name ) {
+		if ( !character.isLetterOrNumber() && character != '_' && character != '-' ) {
+			error = "The map file name must contain only letters, numbers, underscores, or hyphens.";
+			return false;
+		}
+	}
+
+	QDir maps_directory = context.source_file.absoluteDir();
+	if ( maps_directory.dirName().compare( "maps", Qt::CaseInsensitive ) != 0 || !maps_directory.cdUp() ) {
+		error = "Save the map inside the game's maps folder before using this tool.";
+		return false;
+	}
+	context.game_directory = maps_directory;
+	return true;
+}
+
+static QString arena_value( const QString& value ){
+	QString safe = value.simplified();
+	safe.replace( '"', '\'' );
+	safe.replace( '\\', '/' );
+	return safe;
+}
+
+static void generate_arena_file(){
+	CurrentMapContext context;
+	QString error;
+	if ( !get_current_map_context( context, error ) ) {
+		QMessageBox::warning( main_window, "Generate Arena File", error );
+		return;
+	}
+
+	QDialog dialog( main_window, Qt::Dialog | Qt::WindowCloseButtonHint );
+	dialog.setWindowTitle( "Generate Q3Rally Arena File" );
+	dialog.setMinimumWidth( 620 );
+	auto* layout = new QVBoxLayout( &dialog );
+	auto* form = new QFormLayout;
+	layout->addLayout( form );
+
+	auto* map_name_edit = new QLineEdit( context.map_name );
+	map_name_edit->setReadOnly( true );
+	form->addRow( "Map:", map_name_edit );
+
+	QString default_long_name = context.map_name;
+	default_long_name.replace( '_', ' ' );
+	default_long_name.replace( '-', ' ' );
+	if ( !default_long_name.isEmpty() )
+		default_long_name[0] = default_long_name[0].toUpper();
+	auto* long_name_edit = new QLineEdit( default_long_name );
+	form->addRow( "Display name:", long_name_edit );
+	auto* author_edit = new QLineEdit;
+	form->addRow( "Author:", author_edit );
+
+	struct ArenaModeOption { const char* label; const char* arena_type; bool checked; };
+	static const ArenaModeOption modes[] = {
+		{ "Racing", "q3r_racing", true },
+		{ "Racing Deathmatch", "q3r_racing_dm", true },
+		{ "Sprint", "q3r_sprint", false },
+		{ "Ghost Race", "q3r_ghost", false },
+		{ "Team Racing", "q3r_team_racing", true },
+		{ "Team Racing Deathmatch", "q3r_team_racing_dm", true },
+		{ "Elimination", "q3r_elimination", false },
+		{ "Demolition Derby", "q3r_derby", false },
+		{ "Last Car Standing", "q3r_lcs", false },
+		{ "Deathmatch", "q3r_dm", false },
+		{ "Team Deathmatch", "q3r_team_dm", false },
+		{ "Capture the Flag", "q3r_ctf", false },
+		{ "4-Team CTF", "q3r_ctf4", false },
+		{ "Domination", "q3r_dom", false },
+		{ "King of the Hill", "q3r_koth", false },
+		{ "Autoball", "q3r_autoball", false },
+	};
+	auto* mode_group = new QGroupBox( "Supported game modes" );
+	auto* mode_layout = new QGridLayout( mode_group );
+	QList<QCheckBox*> mode_checks;
+	for ( int i = 0; i < static_cast<int>( sizeof( modes ) / sizeof( modes[0] ) ); ++i ) {
+		auto* check = new QCheckBox( modes[i].label, mode_group );
+		check->setChecked( modes[i].checked );
+		mode_checks.push_back( check );
+		mode_layout->addWidget( check, i / 3, i % 3 );
+	}
+	layout->addWidget( mode_group );
+
+	auto make_count_field = [&]( const QString& label ){
+		auto* spin = new QSpinBox( &dialog );
+		spin->setRange( 0, 999 );
+		spin->setSpecialValueText( "Not set" );
+		form->addRow( label, spin );
+		return spin;
+	};
+	auto* starts_spin = make_count_field( "Player starts:" );
+	auto* laps_spin = make_count_field( "Laps:" );
+	auto* checkpoints_spin = make_count_field( "Checkpoints:" );
+	auto* observers_spin = make_count_field( "Observer spots:" );
+	auto* powerups_spin = make_count_field( "Powerups:" );
+	auto* fraglimit_spin = make_count_field( "Frag limit:" );
+
+	auto* bots_edit = new QLineEdit;
+	form->addRow( "Bots (space separated):", bots_edit );
+	auto* bot_support_edit = new QLineEdit;
+	form->addRow( "Bot support:", bot_support_edit );
+	auto* teams_edit = new QLineEdit;
+	form->addRow( "Teams:", teams_edit );
+	auto* weapons_edit = new QLineEdit;
+	form->addRow( "Weapons:", weapons_edit );
+	auto* laptime_edit = new QLineEdit;
+	form->addRow( "Lap time (e.g. 28 sec):", laptime_edit );
+	auto* track_length_edit = new QLineEdit;
+	form->addRow( "Track length:", track_length_edit );
+	QHBoxLayout* flags_layout = new QHBoxLayout;
+	auto* elimination_check = new QCheckBox( "Elimination-ready" );
+	auto* reversible_check = new QCheckBox( "Reversible track" );
+	auto* track_lengths_check = new QCheckBox( "Show track length" );
+	flags_layout->addWidget( elimination_check );
+	flags_layout->addWidget( reversible_check );
+	flags_layout->addWidget( track_lengths_check );
+	flags_layout->addStretch( 1 );
+	form->addRow( "Map flags:", flags_layout );
+
+	QHBoxLayout* path_layout = new QHBoxLayout;
+	auto* path_edit = new QLineEdit( context.game_directory.filePath( QString( "scripts/%1.arena" ).arg( context.map_name ) ) );
+	auto* browse_button = new QPushButton( "Browse..." );
+	path_layout->addWidget( path_edit );
+	path_layout->addWidget( browse_button );
+	form->addRow( "Save to:", path_layout );
+	QObject::connect( browse_button, &QPushButton::clicked, &dialog, [&](){
+		const QString path = QFileDialog::getSaveFileName( &dialog, "Save Arena File", path_edit->text(), "Arena files (*.arena);;All files (*)" );
+		if ( !path.isEmpty() )
+			path_edit->setText( path );
+	} );
+
+	auto* buttons = new QDialogButtonBox( QDialogButtonBox::Save | QDialogButtonBox::Cancel );
+	layout->addWidget( buttons );
+	QObject::connect( buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject );
+	QObject::connect( buttons, &QDialogButtonBox::accepted, &dialog, [&](){
+		if ( long_name_edit->text().trimmed().isEmpty() ) {
+			QMessageBox::warning( &dialog, "Generate Arena File", "Enter a display name for the map." );
+			return;
+		}
+
+		QStringList selected_types;
+		for ( int i = 0; i < mode_checks.size(); ++i ) {
+			if ( mode_checks[i]->isChecked() )
+				selected_types.push_back( modes[i].arena_type );
+		}
+		if ( selected_types.isEmpty() ) {
+			QMessageBox::warning( &dialog, "Generate Arena File", "Select at least one supported game mode." );
+			return;
+		}
+
+		QString output_path = path_edit->text().trimmed();
+		if ( output_path.isEmpty() ) {
+			QMessageBox::warning( &dialog, "Generate Arena File", "Choose where to save the arena file." );
+			return;
+		}
+		if ( QFileInfo( output_path ).suffix().isEmpty() )
+			output_path += ".arena";
+		if ( QFileInfo::exists( output_path ) && QMessageBox::question( &dialog, "Overwrite Arena File", "The arena file already exists. Replace it?", QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) != QMessageBox::Yes )
+			return;
+
+		QString contents = "{\n";
+		auto add_value = [&]( const QString& key, const QString& value ){
+			if ( !value.trimmed().isEmpty() )
+				contents += QString( "\t%1 \"%2\"\n" ).arg( key, arena_value( value ) );
+		};
+		add_value( "map", context.map_name );
+		add_value( "longname", long_name_edit->text() );
+		add_value( "author", author_edit->text() );
+		add_value( "type", selected_types.join( ' ' ) );
+		auto add_count = [&]( const QString& key, QSpinBox* spin ){
+			if ( spin->value() > 0 )
+				add_value( key, QString::number( spin->value() ) );
+		};
+		add_count( "starts", starts_spin );
+		add_count( "laps", laps_spin );
+		add_count( "checkpoints", checkpoints_spin );
+		add_count( "observerspots", observers_spin );
+		add_count( "powerups", powerups_spin );
+		add_count( "fraglimit", fraglimit_spin );
+		add_value( "bots", bots_edit->text() );
+		add_value( "botsupport", bot_support_edit->text() );
+		add_value( "teams", teams_edit->text() );
+		add_value( "weapons", weapons_edit->text() );
+		add_value( "laptime", laptime_edit->text() );
+		add_value( "length", track_length_edit->text() );
+		if ( elimination_check->isChecked() )
+			add_value( "elimination", "1" );
+		if ( reversible_check->isChecked() )
+			add_value( "reversable", "1" );
+		if ( track_lengths_check->isChecked() )
+			add_value( "tracklengths", "1" );
+		contents += "}\n";
+
+		const QFileInfo output_info( output_path );
+		if ( !output_info.absoluteDir().mkpath( "." ) ) {
+			QMessageBox::critical( &dialog, "Generate Arena File", "Could not create the destination folder." );
+			return;
+		}
+		QSaveFile file( output_path );
+		const QByteArray bytes = contents.toUtf8();
+		if ( !file.open( QIODevice::WriteOnly ) || file.write( bytes ) != bytes.size() || !file.commit() ) {
+			QMessageBox::critical( &dialog, "Generate Arena File", QString( "Could not write the arena file:\n%1" ).arg( file.errorString() ) );
+			return;
+		}
+		dialog.accept();
+		QMessageBox::information( main_window, "Arena File Created", QString( "Created:\n%1" ).arg( QFileInfo( output_path ).absoluteFilePath() ) );
+	} );
+	dialog.exec();
+}
+
+static bool is_valid_levelshot( const QString& path ){
+	QFile file( path );
+	if ( !file.open( QIODevice::ReadOnly ) || file.size() < 18 + 128 * 128 * 3 )
+		return false;
+	const QByteArray header = file.read( 18 );
+	if ( header.size() != 18 )
+		return false;
+	const auto byte_at = [&]( int index ){ return static_cast<unsigned char>( header[index] ); };
+	const int width = byte_at( 12 ) | ( byte_at( 13 ) << 8 );
+	const int height = byte_at( 14 ) | ( byte_at( 15 ) << 8 );
+	return byte_at( 2 ) == 2 && width == 128 && height == 128 && byte_at( 16 ) == 24;
+}
+
+static void generate_levelshot(){
+	CurrentMapContext context;
+	QString error;
+	if ( !get_current_map_context( context, error ) ) {
+		QMessageBox::warning( main_window, "Generate Levelshot", error );
+		return;
+	}
+
+	const QString game_name = QString::fromLocal8Bit( GlobalRadiant().getGameName() );
+	if ( context.game_directory.dirName().compare( game_name, Qt::CaseInsensitive ) != 0 ) {
+		QMessageBox::warning( main_window, "Generate Levelshot", QString( "The map must be saved inside the configured game's %1/maps folder.\n\nCurrent folder: %2" ).arg( game_name, context.game_directory.absolutePath() ) );
+		return;
+	}
+	const QString bsp_path = context.game_directory.filePath( QString( "maps/%1.bsp" ).arg( context.map_name ) );
+	if ( !QFileInfo::exists( bsp_path ) ) {
+		QMessageBox::warning( main_window, "Generate Levelshot", QString( "Compile the map first. The BSP was not found:\n%1" ).arg( bsp_path ) );
+		return;
+	}
+
+#if defined( WIN32 ) || defined( _WIN32 )
+	const QString engine_key = "engine_win32";
+#else
+	const QString engine_key = "engine_linux";
+#endif
+	const QString engine_path = QString::fromLocal8Bit( GlobalRadiant().getEnginePath() );
+	const QString engine_name = QString::fromLocal8Bit( GlobalRadiant().getRequiredGameDescriptionKeyValue( engine_key.toLocal8Bit().constData() ) );
+	const QFileInfo configured_engine( engine_name );
+	const QString executable = configured_engine.isAbsolute() ? configured_engine.absoluteFilePath() : QDir( engine_path ).filePath( engine_name );
+	if ( engine_name.isEmpty() || !QFileInfo::exists( executable ) ) {
+		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Q3Rally's engine executable was not found:\n%1\n\nCheck the Radiant Engine Path and the game's %2 setting." ).arg( executable, engine_key ) );
+		return;
+	}
+
+	QDir home_directory = context.game_directory;
+	if ( !home_directory.cdUp() ) {
+		QMessageBox::critical( main_window, "Generate Levelshot", "Could not determine the game's parent folder." );
+		return;
+	}
+	const QString output_path = context.game_directory.filePath( QString( "levelshots/%1.tga" ).arg( context.map_name ) );
+	const QFileInfo previous_shot( output_path );
+	const qint64 previous_modified = previous_shot.exists() ? previous_shot.lastModified().toMSecsSinceEpoch() : 0;
+	if ( previous_shot.exists() && QMessageBox::question( main_window, "Replace Levelshot", QString( "A levelshot already exists:\n%1\n\nReplace it?" ).arg( output_path ), QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) != QMessageBox::Yes )
+		return;
+
+	QStringList arguments;
+	arguments << "-fs_basepath" << QDir::cleanPath( engine_path )
+		<< "-fs_homepath" << home_directory.absolutePath()
+		<< "-fs_game" << game_name
+		<< "+set" << "g_gametype" << "0"
+		<< "+devmap" << context.map_name
+		<< "+wait" << "120"
+		<< "+levelshot";
+
+	QProcess process;
+	process.setWorkingDirectory( engine_path );
+	process.setProcessChannelMode( QProcess::MergedChannels );
+	process.start( executable, arguments, QIODevice::ReadOnly );
+	if ( !process.waitForStarted( 5000 ) ) {
+		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Could not start Q3Rally:\n%1" ).arg( process.errorString() ) );
+		return;
+	}
+
+	QProgressDialog progress( QString( "Starting Q3Rally and capturing %1..." ).arg( context.map_name ), "Cancel", 0, 0, main_window );
+	progress.setWindowTitle( "Generate Levelshot" );
+	progress.setWindowModality( Qt::ApplicationModal );
+	progress.setMinimumDuration( 0 );
+	progress.show();
+
+	bool captured = false;
+	bool cancelled = false;
+	bool timed_out = false;
+	QElapsedTimer elapsed;
+	elapsed.start();
+	QEventLoop loop;
+	QTimer poll_timer;
+	poll_timer.setInterval( 200 );
+	QObject::connect( &progress, &QProgressDialog::canceled, &loop, [&](){
+		cancelled = true;
+		process.kill();
+		loop.quit();
+	} );
+	QObject::connect( &poll_timer, &QTimer::timeout, &loop, [&](){
+		const QFileInfo shot( output_path );
+		if ( shot.exists() && shot.lastModified().toMSecsSinceEpoch() > previous_modified && is_valid_levelshot( output_path ) ) {
+			captured = true;
+			process.kill();
+			loop.quit();
+			return;
+		}
+		if ( process.state() == QProcess::NotRunning ) {
+			loop.quit();
+			return;
+		}
+		if ( elapsed.elapsed() > 180000 ) {
+			timed_out = true;
+			process.kill();
+			loop.quit();
+		}
+	} );
+	poll_timer.start();
+	loop.exec();
+	poll_timer.stop();
+	if ( process.state() != QProcess::NotRunning ) {
+		process.kill();
+		process.waitForFinished( 3000 );
+	}
+	progress.close();
+
+	if ( captured ) {
+		QMessageBox::information( main_window, "Levelshot Created", QString( "Created 128x128 levelshot:\n%1" ).arg( output_path ) );
+	}
+	else if ( cancelled ) {
+		QMessageBox::information( main_window, "Generate Levelshot", "Levelshot generation was cancelled." );
+	}
+	else {
+		QString details = QString::fromLocal8Bit( process.readAll() ).trimmed();
+		QString message = timed_out ? "Q3Rally did not produce a levelshot within three minutes." : "Q3Rally exited without producing a new valid levelshot.";
+		if ( !details.isEmpty() )
+			message += QString( "\n\nEngine output:\n%1" ).arg( details.left( 1600 ) );
+		QMessageBox::warning( main_window, "Generate Levelshot", message );
+	}
+}
+
 void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush ){
+	if ( string_equal( command, "Generate Arena File" ) ) {
+		generate_arena_file();
+		return;
+	}
+	if ( string_equal( command, "Generate Levelshot" ) ) {
+		generate_levelshot();
+		return;
+	}
 	if ( string_equal( command, "About" ) ) {
 		const QString seed_text = g_has_last_seed ? QString::number( g_last_seed ) : "N/A";
 		const QString about_text =
