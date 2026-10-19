@@ -34,6 +34,8 @@
 #include <QProcess>
 #include <QElapsedTimer>
 #include <QDateTime>
+#include <QRegularExpression>
+#include <QSet>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QDialogButtonBox>
@@ -69,6 +71,8 @@
 #include "iscenegraph.h"
 #include "iundo.h"
 #include "iselection.h"
+#include "ifilesystem.h"
+#include "archivelib.h"
 #include "qerplugin.h"
 #include "modulesystem/moduleregistry.h"
 
@@ -370,6 +374,67 @@ static QString arena_value( const QString& value ){
 	return safe;
 }
 
+class ArenaBotCollector
+{
+	QSet<QString> m_bots;
+
+	void add_name( const QString& name ){
+		const QString trimmed = name.trimmed();
+		if ( !trimmed.isEmpty() && !trimmed.contains( QRegularExpression( "\\s" ) ) )
+			m_bots.insert( trimmed );
+	}
+
+public:
+	void collect( const char* filename ){
+		const QString virtual_path = QString( "scripts/" ) + QString::fromLocal8Bit( filename );
+		ArchiveTextFile* file = GlobalFileSystem().openTextFile( virtual_path.toLocal8Bit().constData() );
+		if ( file == nullptr )
+			return;
+
+		QByteArray contents;
+		char buffer[4096];
+		TextInputStream& stream = file->getInputStream();
+		for ( ;; ) {
+			const std::size_t bytes_read = stream.read( buffer, sizeof( buffer ) );
+			if ( bytes_read == 0 )
+				break;
+			contents.append( buffer, static_cast<int>( bytes_read ) );
+		}
+		file->release();
+
+		const QString text = QString::fromUtf8( contents );
+		const QString extension = QFileInfo( QString::fromLocal8Bit( filename ) ).suffix();
+		if ( extension.compare( "bot", Qt::CaseInsensitive ) == 0 ) {
+			static const QRegularExpression name_pattern( "\\bname\\s+\"([^\"]+)\"", QRegularExpression::CaseInsensitiveOption );
+			for ( auto match = name_pattern.globalMatch( text ); match.hasNext(); )
+				add_name( match.next().captured( 1 ) );
+		}
+		else if ( extension.compare( "arena", Qt::CaseInsensitive ) == 0 ) {
+			static const QRegularExpression bots_pattern( "\\bbots\\s+\"([^\"]+)\"", QRegularExpression::CaseInsensitiveOption );
+			for ( auto match = bots_pattern.globalMatch( text ); match.hasNext(); ) {
+				const QStringList names = match.next().captured( 1 ).split( QRegularExpression( "\\s+" ), Qt::SkipEmptyParts );
+				for ( const QString& name : names )
+					add_name( name );
+			}
+		}
+	}
+
+	QStringList names() const{
+		QStringList result = m_bots.values();
+		result.sort( Qt::CaseInsensitive );
+		return result;
+	}
+
+	typedef MemberCaller<ArenaBotCollector, void(const char*), &ArenaBotCollector::collect> FileCallback;
+};
+
+static QStringList available_arena_bots(){
+	ArenaBotCollector collector;
+	GlobalFileSystem().forEachFile( "scripts/", "bot", ArenaBotCollector::FileCallback( collector ), 99 );
+	GlobalFileSystem().forEachFile( "scripts/", "arena", ArenaBotCollector::FileCallback( collector ), 99 );
+	return collector.names();
+}
+
 static void generate_arena_file(){
 	CurrentMapContext context;
 	QString error;
@@ -443,8 +508,22 @@ static void generate_arena_file(){
 	auto* powerups_spin = make_count_field( "Powerups:" );
 	auto* fraglimit_spin = make_count_field( "Frag limit:" );
 
-	auto* bots_edit = new QLineEdit;
-	form->addRow( "Bots (space separated):", bots_edit );
+	auto* bots_list = new QListWidget;
+	bots_list->setSelectionMode( QAbstractItemView::NoSelection );
+	bots_list->setMaximumHeight( 150 );
+	const QStringList bot_names = available_arena_bots();
+	for ( const QString& name : bot_names ) {
+		auto* item = new QListWidgetItem( name, bots_list );
+		item->setFlags( item->flags() | Qt::ItemIsUserCheckable );
+		item->setCheckState( Qt::Unchecked );
+	}
+	if ( bot_names.isEmpty() ) {
+		auto* item = new QListWidgetItem( "No bot definitions found; enter names below.", bots_list );
+		item->setFlags( Qt::NoItemFlags );
+	}
+	form->addRow( "Available bots (select multiple):", bots_list );
+	auto* extra_bots_edit = new QLineEdit;
+	form->addRow( "Additional bots (space separated):", extra_bots_edit );
 	auto* bot_support_edit = new QLineEdit;
 	form->addRow( "Bot support:", bot_support_edit );
 	auto* teams_edit = new QLineEdit;
@@ -525,7 +604,15 @@ static void generate_arena_file(){
 		add_count( "observerspots", observers_spin );
 		add_count( "powerups", powerups_spin );
 		add_count( "fraglimit", fraglimit_spin );
-		add_value( "bots", bots_edit->text() );
+		QStringList selected_bots;
+		for ( int i = 0; i < bots_list->count(); ++i ) {
+			const QListWidgetItem* item = bots_list->item( i );
+			if ( item->checkState() == Qt::Checked )
+				selected_bots.push_back( item->text() );
+		}
+		selected_bots.append( extra_bots_edit->text().split( QRegularExpression( "\\s+" ), Qt::SkipEmptyParts ) );
+		selected_bots.removeDuplicates();
+		add_value( "bots", selected_bots.join( ' ' ) );
 		add_value( "botsupport", bot_support_edit->text() );
 		add_value( "teams", teams_edit->text() );
 		add_value( "weapons", weapons_edit->text() );
@@ -595,12 +682,49 @@ static void generate_levelshot(){
 #endif
 	const QString engine_path = QString::fromLocal8Bit( GlobalRadiant().getEnginePath() );
 	const QString engine_name = QString::fromLocal8Bit( GlobalRadiant().getRequiredGameDescriptionKeyValue( engine_key.toLocal8Bit().constData() ) );
-	const QFileInfo configured_engine( engine_name );
-	const QString executable = configured_engine.isAbsolute() ? configured_engine.absoluteFilePath() : QDir( engine_path ).filePath( engine_name );
-	if ( engine_name.isEmpty() || !QFileInfo::exists( executable ) ) {
-		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Q3Rally's engine executable was not found:\n%1\n\nCheck the Radiant Engine Path and the game's %2 setting." ).arg( executable, engine_key ) );
+	QSettings settings( "Q3Rally", "RadiantTerrainGenerator" );
+	QString default_executable = settings.value( "levelshot/executable", engine_name ).toString().trimmed();
+	if ( default_executable.isEmpty() )
+		default_executable = "q3rally.exe";
+
+	QDialog executable_dialog( main_window, Qt::Dialog | Qt::WindowCloseButtonHint );
+	executable_dialog.setWindowTitle( "Q3Rally Executable" );
+	auto* executable_layout = new QVBoxLayout( &executable_dialog );
+	auto* executable_form = new QFormLayout;
+	executable_layout->addLayout( executable_form );
+	auto* executable_edit = new QLineEdit( default_executable );
+	auto* executable_row = new QHBoxLayout;
+	auto* executable_browse = new QPushButton( "Browse..." );
+	executable_row->addWidget( executable_edit );
+	executable_row->addWidget( executable_browse );
+	executable_form->addRow( "Executable name or path:", executable_row );
+	auto* executable_hint = new QLabel( QString( "Relative names are looked up in the Engine Path: %1" ).arg( engine_path ) );
+	executable_hint->setWordWrap( true );
+	executable_layout->addWidget( executable_hint );
+	auto* executable_buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
+	executable_layout->addWidget( executable_buttons );
+	QObject::connect( executable_browse, &QPushButton::clicked, &executable_dialog, [&](){
+		QString start_directory = engine_path;
+		const QFileInfo current( executable_edit->text().trimmed() );
+		if ( current.isAbsolute() && current.absoluteDir().exists() )
+			start_directory = current.absolutePath();
+		const QString selected = QFileDialog::getOpenFileName( &executable_dialog, "Select Q3Rally Executable", start_directory, "Executables (*.exe);;All files (*)" );
+		if ( !selected.isEmpty() )
+			executable_edit->setText( selected );
+	} );
+	QObject::connect( executable_buttons, &QDialogButtonBox::accepted, &executable_dialog, &QDialog::accept );
+	QObject::connect( executable_buttons, &QDialogButtonBox::rejected, &executable_dialog, &QDialog::reject );
+	if ( executable_dialog.exec() != QDialog::Accepted )
+		return;
+
+	const QString executable_value = executable_edit->text().trimmed();
+	const QFileInfo configured_engine( executable_value );
+	const QString executable = configured_engine.isAbsolute() ? configured_engine.absoluteFilePath() : QDir( engine_path ).absoluteFilePath( executable_value );
+	if ( executable_value.isEmpty() || !QFileInfo( executable ).exists() || !QFileInfo( executable ).isFile() ) {
+		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Q3Rally's engine executable was not found:\n%1\n\nCheck the executable name and Radiant Engine Path." ).arg( executable ) );
 		return;
 	}
+	settings.setValue( "levelshot/executable", executable_value );
 
 	QDir home_directory = context.game_directory;
 	if ( !home_directory.cdUp() ) {
