@@ -2,6 +2,7 @@
 
 #include "terrain_engine.h"
 #include <vector>
+#include <functional>
 
 namespace scene { class Node; }
 
@@ -9,6 +10,7 @@ struct TerrainBuildOptions
 {
 	bool undoable = true;
 	bool preview  = false;
+	TerrainContinueCallback continue_callback;
 };
 
 struct TerrainMaterialSlots
@@ -33,7 +35,7 @@ struct TerrainMaterialRules
 // Generates terrain brushes into func_group entities and inserts them into
 // the scene graph. For standard terrain, one func_group is created.
 // For tunnel terrain, four func_groups are created (floor, ceiling, left wall, right wall).
-void build_terrain_brushes( const BrushData& target, double step_x, double step_y,
+bool build_terrain_brushes( const BrushData& target, double step_x, double step_y,
                              const HeightMap& height_map, const char* top_texture,
                              const TerrainMaterialSlots& material_slots,
                              const TerrainMaterialRules& material_rules,
@@ -42,7 +44,7 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
                              const SurfaceMap* surface_map = nullptr,
                              std::vector<scene::Node*>* created_entities = nullptr );
 
-void build_tunnel_brushes( const BrushData& target, double step_x, double step_y,
+bool build_tunnel_brushes( const BrushData& target, double step_x, double step_y,
                             const TunnelMaps& maps, const char* top_texture,
                             const TerrainMaterialSlots& material_slots,
                             const TerrainMaterialRules& material_rules,

@@ -22,11 +22,27 @@
 #include <QPushButton>
 #include <QFileDialog>
 #include <QImage>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QProgressDialog>
+#include <QCoreApplication>
+#include <QSettings>
+#include <QVariantMap>
+#include <QVariantList>
+#include <QSignalBlocker>
+#include <QComboBox>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QStringList>
 #include "gtkutil/spinbox.h"
 #include "gtkutil/combobox.h"
 
 #include <random>
 #include <limits>
+#include <memory>
+#include <cstdint>
+#include <functional>
+#include <cmath>
 #include <vector>
 
 #include "scenelib.h"
@@ -81,6 +97,99 @@ static double clamp01( double v ){
 	return std::max( 0.0, std::min( 1.0, v ) );
 }
 
+static constexpr std::uint64_t kMaxEstimatedSamples = 500000;
+static constexpr std::uint64_t kMaxEstimatedBrushes = 200000;
+
+struct TerrainWorkEstimate
+{
+	std::uint64_t samples = 0;
+	std::uint64_t brushes = 0;
+	bool overflow = false;
+};
+
+static std::uint64_t estimate_product( std::uint64_t a, std::uint64_t b, bool& overflow ){
+	if ( a != 0 && b > std::numeric_limits<std::uint64_t>::max() / a ) {
+		overflow = true;
+		return std::numeric_limits<std::uint64_t>::max();
+	}
+	return a * b;
+}
+
+static void estimate_add( std::uint64_t& total, std::uint64_t value, bool& overflow ){
+	if ( value > std::numeric_limits<std::uint64_t>::max() - total ) {
+		total = std::numeric_limits<std::uint64_t>::max();
+		overflow = true;
+		return;
+	}
+	total += value;
+}
+
+static std::uint64_t estimate_grid_axis_cells( double extent, double step, bool& overflow ){
+	if ( step <= 0.0 || !std::isfinite( extent ) || !std::isfinite( step ) || extent < 0.0 ) {
+		overflow = true;
+		return std::numeric_limits<std::uint64_t>::max();
+	}
+	const long double cells = std::round( static_cast<long double>( extent ) / static_cast<long double>( step ) );
+	if ( !std::isfinite( cells ) || cells < 0.0L || cells >= std::numeric_limits<std::uint64_t>::max() ) {
+		overflow = true;
+		return std::numeric_limits<std::uint64_t>::max();
+	}
+	return static_cast<std::uint64_t>( cells );
+}
+
+static std::uint64_t estimate_grid_points( double width, double length, double step_x, double step_y, bool& overflow ){
+	const std::uint64_t x_cells = estimate_grid_axis_cells( width, step_x, overflow );
+	const std::uint64_t y_cells = estimate_grid_axis_cells( length, step_y, overflow );
+	std::uint64_t x_points = x_cells;
+	std::uint64_t y_points = y_cells;
+	estimate_add( x_points, 1, overflow );
+	estimate_add( y_points, 1, overflow );
+	return estimate_product( x_points, y_points, overflow );
+}
+
+static TerrainWorkEstimate estimate_terrain_work( const BrushData& target, double step_x, double step_y,
+		bool track_mode, bool track_chain_mode, const std::vector<TrackSectionOptions>& chain_options,
+		bool tunnel_mode, double cave_height, double slope_height, bool split_diagonally ){
+	TerrainWorkEstimate estimate;
+	if ( track_mode && track_chain_mode ) {
+		TrackPort port = make_track_start_port( target, chain_options.front() );
+		for ( const TrackSectionOptions& options : chain_options ) {
+			BrushData segment = make_track_segment_bounds( target, options, port );
+			adjust_bounds_to_fit_grid( segment, step_x, step_y );
+			const std::uint64_t points = estimate_grid_points( segment.width_x, segment.length_y, step_x, step_y, estimate.overflow );
+			const std::uint64_t x_cells = estimate_grid_axis_cells( segment.width_x, step_x, estimate.overflow );
+			const std::uint64_t y_cells = estimate_grid_axis_cells( segment.length_y, step_y, estimate.overflow );
+			estimate_add( estimate.samples, estimate_product( points, 3, estimate.overflow ), estimate.overflow );
+			estimate_add( estimate.brushes, estimate_product( estimate_product( x_cells, y_cells, estimate.overflow ), 2, estimate.overflow ), estimate.overflow );
+			port = compute_track_end_port( target, options, port );
+		}
+		return estimate;
+	}
+
+	const std::uint64_t points = estimate_grid_points( target.width_x, target.length_y, step_x, step_y, estimate.overflow );
+	const std::uint64_t x_cells = estimate_grid_axis_cells( target.width_x, step_x, estimate.overflow );
+	const std::uint64_t y_cells = estimate_grid_axis_cells( target.length_y, step_y, estimate.overflow );
+	const std::uint64_t horizontal_cells = estimate_product( x_cells, y_cells, estimate.overflow );
+	if ( !tunnel_mode ) {
+		estimate.samples = estimate_product( points, track_mode ? 3 : 2, estimate.overflow );
+		estimate.brushes = estimate_product( horizontal_cells, ( track_mode || split_diagonally ) ? 2 : 1, estimate.overflow );
+		return estimate;
+	}
+
+	const std::uint64_t z_cells = std::max<std::uint64_t>( 1, estimate_grid_axis_cells( cave_height + std::abs( slope_height ), step_x, estimate.overflow ) );
+	std::uint64_t y_points = y_cells;
+	std::uint64_t z_points = z_cells;
+	estimate_add( y_points, 1, estimate.overflow );
+	estimate_add( z_points, 1, estimate.overflow );
+	const std::uint64_t wall_points = estimate_product( y_points, z_points, estimate.overflow );
+	estimate.samples = estimate_product( points, 3, estimate.overflow );
+	estimate_add( estimate.samples, estimate_product( wall_points, 2, estimate.overflow ), estimate.overflow );
+	estimate.brushes = estimate_product( horizontal_cells, 4, estimate.overflow );
+	const std::uint64_t wall_cells = estimate_product( y_cells, z_cells, estimate.overflow );
+	estimate_add( estimate.brushes, estimate_product( wall_cells, 4, estimate.overflow ), estimate.overflow );
+	return estimate;
+}
+
 static QString track_section_name( TrackSectionType type ){
 	switch ( type ) {
 	case TrackSectionType::Straight:    return "Straight";
@@ -130,7 +239,8 @@ static QString describe_track_segment( const TrackSectionOptions& options ){
 	return text;
 }
 
-static MaskMap build_mask_map( const BrushData& target, double step_x, double step_y, MaskPreset preset, const QString& image_path ){
+static MaskMap build_mask_map( const BrushData& target, double step_x, double step_y, MaskPreset preset, const QString& image_path,
+		const TerrainContinueCallback& continue_callback = {} ){
 	MaskMap mask_map;
 	if ( preset == MaskPreset::None ) {
 		return mask_map;
@@ -141,8 +251,12 @@ static MaskMap build_mask_map( const BrushData& target, double step_x, double st
 		mask_image = QImage( image_path );
 	}
 
+	std::size_t work_count = 0;
 	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
 		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			if ( continue_callback && ( ++work_count & 0xffU ) == 0U && !continue_callback() ) {
+				return {};
+			}
 			const double nx = target.width_x > 0.0 ? ( x - target.min_x ) / target.width_x : 0.0;
 			const double ny = target.length_y > 0.0 ? ( y - target.min_y ) / target.length_y : 0.0;
 			double weight = 1.0;
@@ -409,6 +523,17 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 		form = right_form;
 
+		auto *preset_widget = new QWidget;
+		auto *preset_layout = new QHBoxLayout( preset_widget );
+		preset_layout->setContentsMargins( 0, 0, 0, 0 );
+		auto *preset_combo = new ComboBox;
+		auto *preset_save_btn = new QPushButton( "Save" );
+		auto *preset_delete_btn = new QPushButton( "Delete" );
+		preset_layout->addWidget( preset_combo, 1 );
+		preset_layout->addWidget( preset_save_btn );
+		preset_layout->addWidget( preset_delete_btn );
+		form->addRow( "Preset:", preset_widget );
+
 		auto *track_chain_list = new QListWidget;
 		track_chain_list->setSelectionMode( QAbstractItemView::SingleSelection );
 		track_chain_list->setMinimumHeight( 96 );
@@ -490,10 +615,13 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		seed_hbox->setContentsMargins( 0, 0, 0, 0 );
 		auto *seed_spin   = new SpinBox( std::numeric_limits<int>::min(), std::numeric_limits<int>::max(), make_auto_seed(), 0, 1 );
 		auto *auto_seed_cb = new QCheckBox( "Auto Seed" );
+		auto *new_seed_btn = new QPushButton( "New" );
+		new_seed_btn->setToolTip( "Choose a new random seed for the next preview or generation." );
 		auto_seed_cb->setChecked( true );
 		seed_spin->setEnabled( false );
 		seed_hbox->addWidget( seed_spin );
 		seed_hbox->addWidget( auto_seed_cb );
+		seed_hbox->addWidget( new_seed_btn );
 		seed_hbox->addStretch();
 		form->addRow( "Seed:", seed_widget );
 
@@ -509,11 +637,14 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 		// Poll the selection bounds every 250ms so the W/L/H labels stay
 		// current if the user changes their selection while the dialog is open.
+		std::function<void()> update_estimate;
 		auto *sel_timer = new QTimer( &dialog );
 		sel_timer->setInterval( 250 );
 		QObject::connect( sel_timer, &QTimer::timeout, [&](){
 			if ( target_combo->currentIndex() == 0 )
 				refresh_sel_labels();
+			if ( update_estimate )
+				update_estimate();
 		} );
 		sel_timer->start();
 
@@ -585,6 +716,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		form->addRow( "Track Min Height (%):", track_min_spin );
 		form->addRow( "Track Max Height (%):", track_max_spin );
 
+		auto *estimate_label = new QLabel;
+		estimate_label->setWordWrap( true );
+		form->addRow( "Estimated work:", estimate_label );
+
 		// Generate (generate without closing) + Close
 		// Buttons: Generate (left) — Close (right), explicit layout so the
 		// order is platform-independent.
@@ -618,6 +753,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 		std::vector<scene::Node*> preview_entities;
 		bool preview_active = false;
+		bool applying_preset = false;
+		bool preview_seed_valid = false;
+		int preview_seed = 0;
 
 		auto clear_preview = [&](){
 			bool changed = false;
@@ -730,9 +868,57 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			return make_manual_brush_data( manual_w_spin->value(), manual_l_spin->value(), manual_h_spin->value() );
 		};
 
+		update_estimate = [&](){
+			const bool advanced = sq_advanced->isChecked();
+			const double step_x = advanced ? step_x_spin->value() : sq_combo->currentData().toInt();
+			const double step_y = advanced ? step_y_spin->value() : sq_combo->currentData().toInt();
+			BrushData target = resolve_target_bounds( step_x, step_y );
+			adjust_bounds_to_fit_grid( target, step_x, step_y );
+			const bool track_mode = (GenerationMode)generation_mode_combo->currentData().toInt() == GenerationMode::TrackSection;
+			const bool track_chain_mode = track_mode && !track_chain_options.empty();
+			const ShapeType shape = (ShapeType)shape_combo->currentData().toInt();
+			const bool tunnel_mode = !track_mode && ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
+			const bool slope_from_selection = target_combo->currentIndex() == 0 && !track_mode
+			                               && ( shape == ShapeType::Slope || shape == ShapeType::SlopeTunnel );
+			const double terrain_shape_height = slope_from_selection
+		                                   ? -( shape_height_spin->value() - 64.0 )
+		                                   : shape_height_spin->value();
+			const double slope_height = shape == ShapeType::SlopeTunnel ? terrain_shape_height : 0.0;
+			const double cave_height = shape == ShapeType::SlopeTunnel ? tunnel_height_spin->value() : shape_height_spin->value();
+			const bool split_diagonally = variance_spin->value() > 0.0 || shape != ShapeType::Flat;
+			const std::vector<TrackSectionOptions> chain = current_track_chain_segments();
+			const TerrainWorkEstimate final_estimate = estimate_terrain_work( target, step_x, step_y, track_mode, track_chain_mode, chain,
+			                                                              tunnel_mode, cave_height, slope_height, split_diagonally );
+			const TerrainWorkEstimate preview_estimate = estimate_terrain_work( target, step_x * 2.0, step_y * 2.0, track_mode, track_chain_mode, chain,
+			                                                                tunnel_mode, cave_height, slope_height, split_diagonally );
+			const bool final_allowed = !final_estimate.overflow && final_estimate.samples <= kMaxEstimatedSamples
+			                        && final_estimate.brushes <= kMaxEstimatedBrushes;
+			const bool preview_allowed = !preview_estimate.overflow && preview_estimate.samples <= kMaxEstimatedSamples
+			                          && preview_estimate.brushes <= kMaxEstimatedBrushes;
+			generate_btn->setEnabled( final_allowed );
+			preview_btn->setEnabled( preview_allowed );
+			if ( final_allowed ) {
+				estimate_label->setStyleSheet( QString() );
+				estimate_label->setText( QString( "~%1 samples, ~%2 brushes for Generate. Preview uses double grid spacing." )
+					.arg( (qulonglong)final_estimate.samples ).arg( (qulonglong)final_estimate.brushes ) );
+			}
+			else if ( preview_allowed ) {
+				estimate_label->setStyleSheet( "color: #b06000;" );
+				estimate_label->setText( QString( "Generate exceeds the safety limit (%1 samples / %2 brushes). A coarser preview is available (~%3 samples / ~%4 brushes)." )
+					.arg( (qulonglong)kMaxEstimatedSamples ).arg( (qulonglong)kMaxEstimatedBrushes )
+					.arg( (qulonglong)preview_estimate.samples ).arg( (qulonglong)preview_estimate.brushes ) );
+			}
+			else {
+				estimate_label->setStyleSheet( "color: #b00020;" );
+				estimate_label->setText( QString( "Estimated work exceeds the safety limit (%1 samples / %2 brushes); increase the grid spacing or reduce the area." )
+					.arg( (qulonglong)kMaxEstimatedSamples ).arg( (qulonglong)kMaxEstimatedBrushes ) );
+			}
+		};
+
 		// Shared validation + generation.
 		auto do_generate = [&]( bool preview_mode ) -> bool {
-			if ( target_combo->currentIndex() == 0 && !query_sel().valid ) {
+			const bool use_frozen_reference = ref_captured && use_ref_cb->isChecked();
+			if ( target_combo->currentIndex() == 0 && !query_sel().valid && !use_frozen_reference ) {
 				GlobalRadiant().m_pfnMessageBox( main_window,
 					"No valid brush is selected.\n\n"
 					"Please select a brush in the viewport first,\n"
@@ -755,8 +941,10 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const bool use_manual  = ( target_combo->currentIndex() == 1 );
 			const bool track_mode  = ( (GenerationMode)generation_mode_combo->currentData().toInt() == GenerationMode::TrackSection );
 			const bool advanced    = sq_advanced->isChecked();
-			const double step_x    = advanced ? step_x_spin->value() : sq_combo->currentData().toInt();
-			const double step_y    = advanced ? step_y_spin->value() : sq_combo->currentData().toInt();
+			const double requested_step_x = advanced ? step_x_spin->value() : sq_combo->currentData().toInt();
+			const double requested_step_y = advanced ? step_y_spin->value() : sq_combo->currentData().toInt();
+			const double step_x = preview_mode ? requested_step_x * 2.0 : requested_step_x;
+			const double step_y = preview_mode ? requested_step_y * 2.0 : requested_step_y;
 			const ShapeType shape  = (ShapeType)shape_combo->currentData().toInt();
 			const NoiseType noise  = (NoiseType)noise_combo->currentData().toInt();
 			const double tun_height = tunnel_height_spin->value();
@@ -777,8 +965,23 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			const std::vector<TrackSectionOptions> chain_options = current_track_chain_segments();
 			int seed = seed_spin->value();
 			if ( auto_seed_cb->isChecked() ) {
-				seed = make_auto_seed();
-				seed_spin->setValue( seed );
+				if ( preview_mode && preview_seed_valid ) {
+					seed = preview_seed;
+				}
+				else if ( !preview_mode && preview_seed_valid ) {
+					seed = preview_seed;
+				}
+				else {
+					seed = make_auto_seed();
+					seed_spin->setValue( seed );
+				}
+				if ( preview_mode ) {
+					preview_seed = seed;
+					preview_seed_valid = true;
+				}
+			}
+			else {
+				preview_seed_valid = false;
 			}
 			const std::string texture_str = texture_edit->text().toStdString();
 			const char* texture       = texture_str.c_str();
@@ -823,7 +1026,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				// Use the frozen reference bounds if captured and checkbox is on,
 				// otherwise sample the live selection.
 				const bool  use_ref = ref_captured && use_ref_cb->isChecked();
-				const SelBounds s   = use_ref ? ref_bounds : query_sel( step_x < step_y ? step_x : step_y );
+				const SelBounds s   = use_ref ? ref_bounds : query_sel( requested_step_x < requested_step_y ? requested_step_x : requested_step_y );
 				if ( s.valid ) {
 					target.min_x = s.x0;
 					target.max_x = s.x1;
@@ -855,14 +1058,9 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 				}
 			}
 
-			// For Slope / Slope Tunnel in Use Selection mode, derive the slope
-			// height from the brush's Z extent so the terrain descends from the
-			// top of the brush down to a minimum height of 64 units.
-			// A negative value flips the engine's formula (base_z = height * nx)
-			// so it slopes downward instead of upward.
-			// For Slope/SlopeTunnel in Use Selection mode the spinbox holds the
-			// drop amount (auto-filled from brush Z − 64). Negate it so the
-			// engine formula (base_z = shape_height * nx) slopes downward.
+			// In selection mode the spinbox represents the target's full Z extent.
+			// The engine needs a negative drop from the top down to 64 units above
+			// the selection's minimum Z.
 			const bool   slope_from_sel = !use_manual
 			                           && !track_mode
 			                           && ( shape == ShapeType::Slope || shape == ShapeType::SlopeTunnel );
@@ -873,24 +1071,25 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			                           ? -( shape_height_spin->value() - 64.0 )
 			                           : shape_height_spin->value();
 
-			// --- Delete the selection brush now that its bounds are captured ---
-			if ( !use_manual && !preview_mode ) {
-				const int sel_count = (int)GlobalSelectionSystem().countSelected();
-				for ( int i = 0; i < sel_count && GlobalSelectionSystem().countSelected() > 0; ++i )
-					Path_deleteTop( GlobalSelectionSystem().ultimateSelected().path() );
-				SceneChangeNotify();
+			adjust_bounds_to_fit_grid( target, requested_step_x, requested_step_y );
+			const bool is_tunnel = !track_mode && ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
+			const double cave_height = ( shape == ShapeType::SlopeTunnel ) ? tun_height : shape_height;
+			const double slope_height = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0.0;
+			const bool split_diagonally = ( variance > 0.0 || shape != ShapeType::Flat );
+			const TerrainWorkEstimate estimate = estimate_terrain_work( target, step_x, step_y, track_mode, track_chain_mode, chain_options,
+			                                                          is_tunnel, cave_height, slope_height, split_diagonally );
+			if ( estimate.overflow || estimate.samples > kMaxEstimatedSamples || estimate.brushes > kMaxEstimatedBrushes ) {
+				GlobalRadiant().m_pfnMessageBox( main_window,
+					"This terrain would exceed the safe generation limit.\n\n"
+					"Increase the grid spacing or reduce the target area, then try again.",
+					"Terrain Generator — Work Limit", EMessageBoxType::Error, 0 );
+				return false;
 			}
-
 			if ( preview_mode ) {
 				clear_preview();
 			}
 
-			adjust_bounds_to_fit_grid( target, step_x, step_y );
-			const MaskMap mask_map = build_mask_map( target, step_x, step_y, mask_preset, mask_image_edit->text() );
-
 			// --- Generate ---
-			const bool is_tunnel = !track_mode && ( shape == ShapeType::Tunnel || shape == ShapeType::SlopeTunnel );
-
 			globalOutputStream() << "TerrainGenerator: generating "
 			                     << ( track_chain_mode ? "track chain" : ( track_mode ? "track section" : ( is_tunnel ? "tunnel" : "terrain" ) ) )
 			                     << " - bounds ("
@@ -899,22 +1098,66 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			                     << ", seed: " << seed
 			                     << ", texture: " << texture << "\n";
 
+			QProgressDialog progress( "Preparing terrain...", "Cancel", 0, 0, &dialog );
+			progress.setWindowModality( Qt::WindowModal );
+			progress.setMinimumDuration( 450 );
+			progress.setAutoClose( false );
+			progress.setAutoReset( false );
+			progress.show();
+			QString progress_phase = "Generating height maps";
+			std::size_t progress_checkpoints = 0;
+			TerrainContinueCallback continue_callback = [&](){
+				if ( ( ++progress_checkpoints & 0x3U ) == 0U ) {
+					progress.setLabelText( progress_phase + QString( " (%1 checkpoints)" ).arg( (qulonglong)progress_checkpoints ) );
+					QCoreApplication::processEvents();
+				}
+				return !progress.wasCanceled();
+			};
+			QCoreApplication::processEvents();
+			const MaskMap mask_map = build_mask_map( target, step_x, step_y, mask_preset, mask_image_edit->text(), continue_callback );
+			if ( progress.wasCanceled() ) {
+				progress.close();
+				return false;
+			}
+
 			TerrainBuildOptions build_options;
 			build_options.preview  = preview_mode;
-			build_options.undoable = !preview_mode;
+			build_options.undoable = false;
+			build_options.continue_callback = continue_callback;
+			std::vector<scene::Node*> generated_entities;
+			bool generation_complete = true;
+			std::unique_ptr<UndoableCommand> generation_undo;
 
 			if ( track_mode ) {
 				if ( track_chain_mode ) {
 					TrackPort current_port = make_track_start_port( target, chain_options.front() );
 					for ( std::size_t i = 0; i < chain_options.size(); ++i ) {
+						if ( progress.wasCanceled() ) {
+							generation_complete = false;
+							break;
+						}
 						BrushData segment_target = make_track_segment_bounds( target, chain_options[i], current_port );
 						adjust_bounds_to_fit_grid( segment_target, step_x, step_y );
-						const MaskMap segment_mask_map = build_mask_map( segment_target, step_x, step_y, mask_preset, mask_image_edit->text() );
+						progress_phase = QString( "Generating track segment %1 of %2" ).arg( (qulonglong)i + 1 ).arg( (qulonglong)chain_options.size() );
+						const MaskMap segment_mask_map = build_mask_map( segment_target, step_x, step_y, mask_preset, mask_image_edit->text(), continue_callback );
+						if ( progress.wasCanceled() ) {
+							generation_complete = false;
+							break;
+						}
 						auto maps = generate_track_section_maps_from_port( segment_target, target, step_x, step_y, chain_options[i], current_port,
 						                                                  variance, frequency, segment_mask_map, noise, terrace,
-						                                                  post_process, seed + (int)i * 7919 );
-						build_terrain_brushes( segment_target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
-						                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
+						                                                  post_process, seed + (int)i * 7919, continue_callback );
+						if ( progress.wasCanceled() || maps.height_map.empty() ) {
+							generation_complete = false;
+							break;
+						}
+						if ( !generation_undo && !preview_mode )
+							generation_undo = std::make_unique<UndoableCommand>( "terrainGenerator.generate" );
+						if ( !build_terrain_brushes( segment_target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
+						                           build_options, &maps.surface_map, &generated_entities ) ) {
+							generation_complete = false;
+							break;
+						}
 						current_port = maps.end_port;
 					}
 					if ( !preview_mode ) {
@@ -924,8 +1167,13 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 					}
 				}
 				else {
+					progress_phase = "Generating track section";
 					auto maps = generate_track_section_maps( target, step_x, step_y, track_options, variance, frequency,
-					                                        mask_map, noise, terrace, post_process, seed );
+						                                        mask_map, noise, terrace, post_process, seed, continue_callback );
+					if ( progress.wasCanceled() || maps.height_map.empty() ) {
+						generation_complete = false;
+					}
+					else {
 					TrackChainSpec chain_spec;
 					chain_spec.start_port = maps.start_port;
 					chain_spec.segments.push_back( track_options );
@@ -936,36 +1184,78 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 						                     << end_port.x << ", " << end_port.y << ", " << end_port.z
 						                     << "), heading: " << end_port.heading_degrees << "\n";
 					}
-					build_terrain_brushes( target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
-					                      build_options, &maps.surface_map, preview_mode ? &preview_entities : nullptr );
+					if ( !generation_undo && !preview_mode )
+						generation_undo = std::make_unique<UndoableCommand>( "terrainGenerator.generate" );
+					generation_complete = build_terrain_brushes( target, step_x, step_y, maps.height_map, texture, material_slots, material_rules, true,
+					                                          build_options, &maps.surface_map, &generated_entities );
+					}
 				}
 			}
 			else if ( is_tunnel ) {
-				const double cave_height    = ( shape == ShapeType::SlopeTunnel ) ? tun_height   : shape_height;
-				const double slope_height   = ( shape == ShapeType::SlopeTunnel ) ? shape_height : 0;
 				const double tunnel_terrace = ( shape == ShapeType::SlopeTunnel ) ? terrace      : 0.0;
-				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, mask_map, noise, tunnel_terrace, seed );
-				build_tunnel_brushes( target, step_x, step_y, maps, texture, material_slots, material_rules, cave_height, slope_height,
-				                     build_options, preview_mode ? &preview_entities : nullptr );
+				progress_phase = "Generating tunnel";
+				auto maps = generate_tunnel_height_maps( target, step_x, step_y, cave_height, slope_height, variance, frequency, mask_map, noise, tunnel_terrace, seed, continue_callback );
+				if ( progress.wasCanceled() || maps.floor_map.empty() ) {
+					generation_complete = false;
+				}
+				else {
+					if ( !generation_undo && !preview_mode )
+						generation_undo = std::make_unique<UndoableCommand>( "terrainGenerator.generate" );
+					generation_complete = build_tunnel_brushes( target, step_x, step_y, maps, texture, material_slots, material_rules, cave_height, slope_height,
+					                                           build_options, &generated_entities );
+				}
 			}
 			else {
-				bool split_diagonally = ( variance > 0 || shape != ShapeType::Flat );
+				progress_phase = "Generating terrain surface";
 				auto height_map = generate_height_map( target, step_x, step_y, shape, shape_height, variance, frequency, mask_map,
-				                                      noise, terrace, curve_radius, bank_angle, ramp_length, post_process, seed );
-				build_terrain_brushes( target, step_x, step_y, height_map, texture, material_slots, material_rules, split_diagonally,
-				                      build_options, nullptr, preview_mode ? &preview_entities : nullptr );
+				                                      noise, terrace, curve_radius, bank_angle, ramp_length, post_process, seed, continue_callback );
+				if ( progress.wasCanceled() || height_map.empty() ) {
+					generation_complete = false;
+				}
+				else {
+					if ( !generation_undo && !preview_mode )
+						generation_undo = std::make_unique<UndoableCommand>( "terrainGenerator.generate" );
+					generation_complete = build_terrain_brushes( target, step_x, step_y, height_map, texture, material_slots, material_rules, split_diagonally,
+					                                          build_options, nullptr, &generated_entities );
+				}
 			}
+
+			if ( generation_complete && !preview_mode && !use_manual && !use_frozen_reference ) {
+				const int sel_count = (int)GlobalSelectionSystem().countSelected();
+				for ( int i = 0; i < sel_count && GlobalSelectionSystem().countSelected() > 0; ++i )
+					Path_deleteTop( GlobalSelectionSystem().ultimateSelected().path() );
+				SceneChangeNotify();
+			}
+			progress.close();
+			if ( !generation_complete ) {
+				for ( scene::Node* node : generated_entities ) {
+					if ( node != nullptr )
+						Node_getTraversable( GlobalSceneGraph().root() )->erase( *node );
+				}
+				generated_entities.clear();
+				SceneChangeNotify();
+				preview_active = false;
+				generation_undo.reset();
+				return false;
+			}
+			generation_undo.reset();
 
 			g_last_seed = seed;
 			g_has_last_seed = true;
 			preview_active = preview_mode;
+			if ( preview_mode ) {
+				preview_entities = std::move( generated_entities );
+			}
+			else {
+				preview_seed_valid = false;
+			}
 			globalOutputStream() << "TerrainGenerator: generation complete\n";
 			return true;
 		};
 
 		bool generating = false;
 		auto rerender_preview_if_active = [&](){
-			if ( preview_active && !generating ) {
+			if ( preview_active && !generating && !applying_preset ) {
 				generating = true;
 				do_generate( true );
 				generating = false;
@@ -1258,6 +1548,208 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			}
 		};
 
+		QSettings preset_settings( "Q3Rally", "RadiantTerrainGenerator" );
+		auto track_options_to_map = []( const TrackSectionOptions& options ){
+			QVariantMap map;
+			map["type"] = (int)options.type;
+			map["track_width"] = options.track_width;
+			map["shoulder_width"] = options.shoulder_width;
+			map["berm_height"] = options.berm_height;
+			map["banking_angle_deg"] = options.banking_angle_deg;
+			map["feature_height"] = options.feature_height;
+			map["feature_length"] = options.feature_length;
+			map["curve_radius"] = options.curve_radius;
+			map["curve_arc_degrees"] = options.curve_arc_degrees;
+			map["smooth_track"] = options.smooth_track;
+			return map;
+		};
+		auto track_options_from_map = []( const QVariantMap& map ){
+			TrackSectionOptions options;
+			options.type = (TrackSectionType)map.value( "type", (int)options.type ).toInt();
+			options.track_width = map.value( "track_width", options.track_width ).toDouble();
+			options.shoulder_width = map.value( "shoulder_width", options.shoulder_width ).toDouble();
+			options.berm_height = map.value( "berm_height", options.berm_height ).toDouble();
+			options.banking_angle_deg = map.value( "banking_angle_deg", options.banking_angle_deg ).toDouble();
+			options.feature_height = map.value( "feature_height", options.feature_height ).toDouble();
+			options.feature_length = map.value( "feature_length", options.feature_length ).toDouble();
+			options.curve_radius = map.value( "curve_radius", options.curve_radius ).toDouble();
+			options.curve_arc_degrees = map.value( "curve_arc_degrees", options.curve_arc_degrees ).toDouble();
+			options.smooth_track = map.value( "smooth_track", options.smooth_track ).toBool();
+			return options;
+		};
+		auto current_preset_values = [&](){
+			QVariantMap values;
+			values["target_mode"] = target_combo->currentIndex();
+			values["manual_width"] = manual_w_spin->value();
+			values["manual_length"] = manual_l_spin->value();
+			values["manual_height"] = manual_h_spin->value();
+			values["advanced_grid"] = sq_advanced->isChecked();
+			values["sub_square"] = sq_combo->currentData().toInt();
+			values["step_x"] = step_x_spin->value();
+			values["step_y"] = step_y_spin->value();
+			values["generation_mode"] = generation_mode_combo->currentData().toInt();
+			values["shape"] = shape_combo->currentData().toInt();
+			values["shape_height"] = shape_height_spin->value();
+			values["tunnel_height"] = tunnel_height_spin->value();
+			values["track_options"] = track_options_to_map( read_track_options() );
+			QVariantList chain;
+			for ( const TrackSectionOptions& options : track_chain_options )
+				chain.push_back( track_options_to_map( options ) );
+			values["track_chain"] = chain;
+			values["track_chain_row"] = track_chain_list->currentRow();
+			values["noise"] = noise_combo->currentData().toInt();
+			values["variance"] = variance_spin->value();
+			values["frequency"] = frequency_spin->value();
+			values["post_process"] = post_process_combo->currentData().toInt();
+			values["laplacian"] = laplacian_spin->value();
+			values["thermal"] = thermal_spin->value();
+			values["hydraulic"] = hydraulic_spin->value();
+			values["mask_preset"] = mask_preset_combo->currentData().toInt();
+			values["mask_image"] = mask_image_edit->text();
+			values["seed"] = seed_spin->value();
+			values["auto_seed"] = auto_seed_cb->isChecked();
+			values["texture"] = texture_edit->text();
+			values["steep_material"] = steep_material_edit->text();
+			values["peak_material"] = peak_material_edit->text();
+			values["dirt_material"] = dirt_material_edit->text();
+			values["track_material"] = track_material_edit->text();
+			values["steep_angle"] = steep_angle_spin->value();
+			values["peak_min"] = peak_min_spin->value();
+			values["dirt_min"] = dirt_min_spin->value();
+			values["dirt_max"] = dirt_max_spin->value();
+			values["track_min"] = track_min_spin->value();
+			values["track_max"] = track_max_spin->value();
+			values["curve_radius"] = curve_radius_spin->value();
+			values["curve_arc"] = curve_arc_spin->value();
+			values["banking_angle"] = banking_angle_spin->value();
+			values["ramp_length"] = ramp_length_spin->value();
+			values["terrace"] = terrace_spin->value();
+			return values;
+		};
+		auto refresh_preset_combo = [&]( const QString& selected ){
+			const QSignalBlocker blocker( preset_combo );
+			preset_combo->clear();
+			preset_combo->addItem( "Choose preset..." );
+			preset_settings.beginGroup( "presets" );
+			QStringList names = preset_settings.childKeys();
+			preset_settings.endGroup();
+			names.sort( Qt::CaseInsensitive );
+			preset_combo->addItems( names );
+			const int index = selected.isEmpty() ? 0 : preset_combo->findText( selected );
+			preset_combo->setCurrentIndex( index >= 0 ? index : 0 );
+		};
+		auto load_preset = [&]( const QString& name ){
+			preset_settings.beginGroup( "presets" );
+			const QVariantMap values = preset_settings.value( name ).toMap();
+			preset_settings.endGroup();
+			if ( values.isEmpty() )
+				return;
+
+			applying_preset = true;
+			suppress_track_chain_sync = true;
+			auto set_combo = [&]( QComboBox* combo, const char* key ){
+				if ( values.contains( key ) ) {
+					const int index = combo->findData( values.value( key ) );
+					if ( index >= 0 ) combo->setCurrentIndex( index );
+				}
+			};
+			auto set_int = [&]( QSpinBox* spin, const char* key ){ if ( values.contains( key ) ) spin->setValue( values.value( key ).toInt() ); };
+			auto set_double = [&]( QDoubleSpinBox* spin, const char* key ){ if ( values.contains( key ) ) spin->setValue( values.value( key ).toDouble() ); };
+			auto set_text = [&]( QLineEdit* edit, const char* key ){ if ( values.contains( key ) ) edit->setText( values.value( key ).toString() ); };
+			set_combo( target_combo, "target_mode" );
+			set_int( manual_w_spin, "manual_width" );
+			set_int( manual_l_spin, "manual_length" );
+			set_int( manual_h_spin, "manual_height" );
+			sq_advanced->setChecked( values.value( "advanced_grid", false ).toBool() );
+			set_combo( sq_combo, "sub_square" );
+			set_int( step_x_spin, "step_x" );
+			set_int( step_y_spin, "step_y" );
+			set_combo( generation_mode_combo, "generation_mode" );
+			set_combo( shape_combo, "shape" );
+			set_double( shape_height_spin, "shape_height" );
+			set_double( tunnel_height_spin, "tunnel_height" );
+			set_combo( noise_combo, "noise" );
+			set_double( variance_spin, "variance" );
+			set_double( frequency_spin, "frequency" );
+			set_combo( post_process_combo, "post_process" );
+			set_int( laplacian_spin, "laplacian" );
+			set_int( thermal_spin, "thermal" );
+			set_int( hydraulic_spin, "hydraulic" );
+			set_combo( mask_preset_combo, "mask_preset" );
+			set_text( mask_image_edit, "mask_image" );
+			set_text( texture_edit, "texture" );
+			set_text( steep_material_edit, "steep_material" );
+			set_text( peak_material_edit, "peak_material" );
+			set_text( dirt_material_edit, "dirt_material" );
+			set_text( track_material_edit, "track_material" );
+			set_double( steep_angle_spin, "steep_angle" );
+			set_double( peak_min_spin, "peak_min" );
+			set_double( dirt_min_spin, "dirt_min" );
+			set_double( dirt_max_spin, "dirt_max" );
+			set_double( track_min_spin, "track_min" );
+			set_double( track_max_spin, "track_max" );
+			set_double( curve_radius_spin, "curve_radius" );
+			set_double( curve_arc_spin, "curve_arc" );
+			set_double( banking_angle_spin, "banking_angle" );
+			set_double( ramp_length_spin, "ramp_length" );
+			set_double( terrace_spin, "terrace" );
+			track_chain_options.clear();
+			for ( const QVariant& entry : values.value( "track_chain" ).toList() )
+				track_chain_options.push_back( track_options_from_map( entry.toMap() ) );
+			{
+				const QSignalBlocker blocker( track_chain_list );
+				refresh_track_chain_list();
+				if ( !track_chain_options.empty() )
+					track_chain_list->setCurrentRow( std::clamp( values.value( "track_chain_row", 0 ).toInt(), 0, (int)track_chain_options.size() - 1 ) );
+			}
+			if ( values.contains( "track_options" ) )
+				apply_track_options_to_controls( track_options_from_map( values.value( "track_options" ).toMap() ) );
+			set_int( seed_spin, "seed" );
+			auto_seed_cb->setChecked( values.value( "auto_seed", true ).toBool() );
+			seed_spin->setEnabled( !auto_seed_cb->isChecked() );
+			preview_seed_valid = false;
+			suppress_track_chain_sync = false;
+			applying_preset = false;
+			update_target_mode( target_combo->currentIndex() );
+			update_advanced( sq_advanced->isChecked() );
+			update_shape( shape_combo->currentIndex() );
+			update_mask_controls( mask_preset_combo->currentIndex() );
+			update_track_section();
+			update_estimate();
+		};
+		refresh_preset_combo( QString() );
+		QObject::connect( preset_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int index ){
+			if ( index > 0 )
+				load_preset( preset_combo->currentText() );
+		} );
+		QObject::connect( preset_save_btn, &QPushButton::clicked, [&](){
+			bool ok = false;
+			const QString entered = QInputDialog::getText( &dialog, "Save Terrain Preset", "Preset name:", QLineEdit::Normal, QString(), &ok ).trimmed();
+			if ( !ok || entered.isEmpty() )
+				return;
+			if ( entered.contains( '/' ) || entered.contains( '\\' ) ) {
+				QMessageBox::warning( &dialog, "Invalid Preset Name", "Preset names cannot contain slash characters." );
+				return;
+			}
+			preset_settings.beginGroup( "presets" );
+			preset_settings.setValue( entered, current_preset_values() );
+			preset_settings.endGroup();
+			preset_settings.sync();
+			refresh_preset_combo( entered );
+		} );
+		QObject::connect( preset_delete_btn, &QPushButton::clicked, [&](){
+			if ( preset_combo->currentIndex() <= 0 )
+				return;
+			const QString name = preset_combo->currentText();
+			if ( QMessageBox::question( &dialog, "Delete Terrain Preset", QString( "Delete preset '%1'?" ).arg( name ) ) != QMessageBox::Yes )
+				return;
+			preset_settings.beginGroup( "presets" );
+			preset_settings.remove( name );
+			preset_settings.endGroup();
+			preset_settings.sync();
+			refresh_preset_combo( QString() );
+		} );
+
 		// Wire signals
 		QObject::connect( generation_mode_combo, QOverload<int>::of( &QComboBox::currentIndexChanged ), [&]( int ){
 			update_shape( shape_combo->currentIndex() );
@@ -1280,7 +1772,6 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 			rerender_preview_if_active();
 		} );
 		QObject::connect( use_ref_cb,   &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
-		QObject::connect( auto_seed_cb, &QCheckBox::toggled,                                   [&]( bool ){ rerender_preview_if_active(); } );
 		QObject::connect( manual_w_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( manual_l_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
 		QObject::connect( manual_h_spin, QOverload<int>::of( &QSpinBox::valueChanged ), [&]( int ){ rerender_preview_if_active(); } );
@@ -1328,9 +1819,27 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		QObject::connect( track_max_spin, QOverload<double>::of( &QDoubleSpinBox::valueChanged ), [&]( double ){ rerender_preview_if_active(); } );
 
 		QObject::connect( auto_seed_cb, &QCheckBox::toggled, [&]( bool checked ){
+			preview_seed_valid = false;
 			seed_spin->setEnabled( !checked );
-			if ( checked )
+			if ( checked ) {
+				const bool was_generating = generating;
+				generating = true;
 				seed_spin->setValue( make_auto_seed() );
+				generating = was_generating;
+			}
+			rerender_preview_if_active();
+		} );
+		QObject::connect( new_seed_btn, &QPushButton::clicked, [&](){
+			if ( !auto_seed_cb->isChecked() ) {
+				auto_seed_cb->setChecked( true );
+				return;
+			}
+			preview_seed_valid = false;
+			const bool was_generating = generating;
+			generating = true;
+			seed_spin->setValue( make_auto_seed() );
+			generating = was_generating;
+			rerender_preview_if_active();
 		} );
 
 		QObject::connect( mask_image_pick, &QPushButton::clicked, [&](){
@@ -1345,6 +1854,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 		update_shape( shape_combo->currentIndex() );
 		update_mask_controls( mask_preset_combo->currentIndex() );
 		apply_post_process_preset();
+		update_estimate();
 
 		// show() instead of exec() so the dialog is non-modal — the texture
 		// browser panel (and all other Radiant windows) remain interactive

@@ -58,6 +58,11 @@ static double sample_mask_weight( const MaskMap& mask_map, double x, double y ){
 	return std::clamp( it->second, 0.0, 1.0 );
 }
 
+static bool generation_checkpoint( const TerrainContinueCallback& continue_callback, std::size_t& work_count ){
+	++work_count;
+	return !continue_callback || ( ( work_count & 0xffU ) != 0U ) || continue_callback();
+}
+
 // ---------------------------------------------------------------------------
 
 BrushData make_manual_brush_data( double width, double length, double height ){
@@ -109,17 +114,23 @@ static int clamp_iteration_count( int requested, std::size_t cell_count ){
 	return std::min( requested, max_iter );
 }
 
-static std::size_t grid_index( int ix, int iy, int width ){
-	return static_cast<std::size_t>( iy ) * static_cast<std::size_t>( width ) + static_cast<std::size_t>( ix );
+static std::size_t grid_index( int ix, int iy, int height ){
+	// Height maps are filled with X as the outer loop and Y as the inner loop.
+	return static_cast<std::size_t>( ix ) * static_cast<std::size_t>( height ) + static_cast<std::size_t>( iy );
 }
 
-static void quantize_terraces( std::vector<double>& values, double terrace_step ){
+static bool quantize_terraces( std::vector<double>& values, double terrace_step,
+		const TerrainContinueCallback& continue_callback, std::size_t& work_count ){
 	if ( terrace_step <= 0.0 ) {
-		return;
+		return true;
 	}
 	for ( double& v : values ) {
+		if ( !generation_checkpoint( continue_callback, work_count ) ) {
+			return false;
+		}
 		v = std::floor( v / terrace_step ) * terrace_step;
 	}
+	return true;
 }
 
 static bool same_terrace_band( double a, double b, double terrace_step ){
@@ -131,12 +142,17 @@ static bool same_terrace_band( double a, double b, double terrace_step ){
 	return ia == ib;
 }
 
-static double laplacian_pass( std::vector<double>& values, int width, int height, double terrace_step ){
+static double laplacian_pass( std::vector<double>& values, int width, int height, double terrace_step,
+		const TerrainContinueCallback& continue_callback, std::size_t& work_count, bool& cancelled ){
 	std::vector<double> next = values;
 	double max_delta = 0.0;
 	for ( int iy = 0; iy < height; ++iy ) {
 		for ( int ix = 0; ix < width; ++ix ) {
-			const std::size_t idx = grid_index( ix, iy, width );
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				cancelled = true;
+				return 0.0;
+			}
+			const std::size_t idx = grid_index( ix, iy, height );
 			const double center = values[idx];
 			double sum = center;
 			int count = 1;
@@ -147,7 +163,7 @@ static double laplacian_pass( std::vector<double>& values, int width, int height
 				if ( nx < 0 || nx >= width || ny < 0 || ny >= height ) {
 					continue;
 				}
-				const double neighbor = values[grid_index( nx, ny, width )];
+				const double neighbor = values[grid_index( nx, ny, height )];
 				if ( same_terrace_band( center, neighbor, terrace_step ) ) {
 					sum += neighbor;
 					++count;
@@ -159,16 +175,24 @@ static double laplacian_pass( std::vector<double>& values, int width, int height
 		}
 	}
 	values.swap( next );
-	quantize_terraces( values, terrace_step );
+	if ( !quantize_terraces( values, terrace_step, continue_callback, work_count ) ) {
+		cancelled = true;
+		return 0.0;
+	}
 	return max_delta;
 }
 
-static double thermal_pass( std::vector<double>& values, int width, int height, double terrace_step ){
+static double thermal_pass( std::vector<double>& values, int width, int height, double terrace_step,
+		const TerrainContinueCallback& continue_callback, std::size_t& work_count, bool& cancelled ){
 	std::vector<double> delta( values.size(), 0.0 );
 	double max_transfer = 0.0;
 	for ( int iy = 0; iy < height; ++iy ) {
 		for ( int ix = 0; ix < width; ++ix ) {
-			const std::size_t idx = grid_index( ix, iy, width );
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				cancelled = true;
+				return 0.0;
+			}
+			const std::size_t idx = grid_index( ix, iy, height );
 			const double center = values[idx];
 			const int offsets[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
 			for ( const auto& off : offsets ) {
@@ -177,7 +201,7 @@ static double thermal_pass( std::vector<double>& values, int width, int height, 
 				if ( nx < 0 || nx >= width || ny < 0 || ny >= height ) {
 					continue;
 				}
-				const std::size_t nidx = grid_index( nx, ny, width );
+				const std::size_t nidx = grid_index( nx, ny, height );
 				if ( idx >= nidx ) {
 					continue;
 				}
@@ -204,18 +228,30 @@ static double thermal_pass( std::vector<double>& values, int width, int height, 
 		}
 	}
 	for ( std::size_t i = 0; i < values.size(); ++i ) {
+		if ( !generation_checkpoint( continue_callback, work_count ) ) {
+			cancelled = true;
+			return 0.0;
+		}
 		values[i] += delta[i];
 	}
-	quantize_terraces( values, terrace_step );
+	if ( !quantize_terraces( values, terrace_step, continue_callback, work_count ) ) {
+		cancelled = true;
+		return 0.0;
+	}
 	return max_transfer;
 }
 
-static double hydraulic_pass( std::vector<double>& values, int width, int height, double terrace_step, TerrainRng& rng ){
+static double hydraulic_pass( std::vector<double>& values, int width, int height, double terrace_step, TerrainRng& rng,
+		const TerrainContinueCallback& continue_callback, std::size_t& work_count, bool& cancelled ){
 	std::vector<double> delta( values.size(), 0.0 );
 	double max_transfer = 0.0;
 	for ( int iy = 1; iy < height - 1; ++iy ) {
 		for ( int ix = 1; ix < width - 1; ++ix ) {
-			const std::size_t idx = grid_index( ix, iy, width );
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				cancelled = true;
+				return 0.0;
+			}
+			const std::size_t idx = grid_index( ix, iy, height );
 			const double center = values[idx];
 			int best_x = ix;
 			int best_y = iy;
@@ -227,7 +263,7 @@ static double hydraulic_pass( std::vector<double>& values, int width, int height
 					}
 					const int nx = ix + ox;
 					const int ny = iy + oy;
-					const double neighbor = values[grid_index( nx, ny, width )];
+					const double neighbor = values[grid_index( nx, ny, height )];
 					if ( !same_terrace_band( center, neighbor, terrace_step ) ) {
 						continue;
 					}
@@ -242,7 +278,7 @@ static double hydraulic_pass( std::vector<double>& values, int width, int height
 			if ( best_drop <= 0.5 ) {
 				continue;
 			}
-			const std::size_t nidx = grid_index( best_x, best_y, width );
+			const std::size_t nidx = grid_index( best_x, best_y, height );
 			const double jitter = 0.75 + rng.random_double() * 0.5;
 			const double moved = std::min( best_drop * 0.08, 1.2 ) * jitter;
 			delta[idx] -= moved;
@@ -251,9 +287,16 @@ static double hydraulic_pass( std::vector<double>& values, int width, int height
 		}
 	}
 	for ( std::size_t i = 0; i < values.size(); ++i ) {
+		if ( !generation_checkpoint( continue_callback, work_count ) ) {
+			cancelled = true;
+			return 0.0;
+		}
 		values[i] += delta[i];
 	}
-	quantize_terraces( values, terrace_step );
+	if ( !quantize_terraces( values, terrace_step, continue_callback, work_count ) ) {
+		cancelled = true;
+		return 0.0;
+	}
 	return max_transfer;
 }
 
@@ -269,7 +312,8 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
                                 double curve_radius, double banking_angle_deg,
                                 double ramp_length,
                                 const PostProcessSettings& post_process,
-                                int seed ){
+                                int seed,
+                                const TerrainContinueCallback& continue_callback ){
 	HeightMap height_map;
 	TerrainRng rng( static_cast<std::uint32_t>( seed ) );
 	const int width = static_cast<int>( std::round( target.width_x / step_x ) ) + 1;
@@ -279,9 +323,13 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 
 	double seed_x = rng.random_double() * 10000.0;
 	double seed_y = rng.random_double() * 10000.0;
+	std::size_t work_count = 0;
 
 	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
 		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				return {};
+			}
 			double nx = target.width_x  > 0 ? ( x - target.min_x ) / target.width_x  : 0.0;
 			double ny = target.length_y > 0 ? ( y - target.min_y ) / target.length_y : 0.0;
 
@@ -424,16 +472,21 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 
 	if ( !grid.empty() ) {
 		const std::size_t cell_count = grid.size();
+		bool cancelled = false;
 		const int lap_iters = clamp_iteration_count( post_process.laplacian_iterations, cell_count );
 		for ( int i = 0; i < lap_iters; ++i ) {
-			if ( laplacian_pass( grid, width, height, terrace_step ) < 0.05 ) {
+			if ( continue_callback && !continue_callback() ) return {};
+			if ( laplacian_pass( grid, width, height, terrace_step, continue_callback, work_count, cancelled ) < 0.05 ) {
+				if ( cancelled ) return {};
 				break;
 			}
 		}
 
 		const int thermal_iters = clamp_iteration_count( post_process.thermal_iterations, cell_count );
 		for ( int i = 0; i < thermal_iters; ++i ) {
-			if ( thermal_pass( grid, width, height, terrace_step ) < 0.02 ) {
+			if ( continue_callback && !continue_callback() ) return {};
+			if ( thermal_pass( grid, width, height, terrace_step, continue_callback, work_count, cancelled ) < 0.02 ) {
+				if ( cancelled ) return {};
 				break;
 			}
 		}
@@ -441,7 +494,9 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 		TerrainRng hydraulic_rng( mix_seed( static_cast<std::uint32_t>( seed ), 0x68796472U ) );
 		const int hydraulic_iters = clamp_iteration_count( post_process.hydraulic_iterations, cell_count );
 		for ( int i = 0; i < hydraulic_iters; ++i ) {
-			if ( hydraulic_pass( grid, width, height, terrace_step, hydraulic_rng ) < 0.02 ) {
+			if ( continue_callback && !continue_callback() ) return {};
+			if ( hydraulic_pass( grid, width, height, terrace_step, hydraulic_rng, continue_callback, work_count, cancelled ) < 0.02 ) {
+				if ( cancelled ) return {};
 				break;
 			}
 		}
@@ -450,6 +505,7 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
 	std::size_t index = 0;
 	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
 		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			if ( !generation_checkpoint( continue_callback, work_count ) ) return {};
 			height_map[{ round2( x ), round2( y ) }] = std::round( grid[index++] );
 		}
 	}
@@ -771,7 +827,8 @@ TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_t
                                                         const MaskMap& mask_map,
                                                         NoiseType noise_type, double terrace_step,
                                                         const PostProcessSettings& post_process,
-                                                        int seed ){
+                                                        int seed,
+                                                        const TerrainContinueCallback& continue_callback ){
 	TrackSectionMaps result;
 	const BrushData local_target = make_local_track_template( section_template );
 	const BrushData local_bounds = make_local_track_sample_bounds( section_template, track_options );
@@ -789,9 +846,13 @@ TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_t
 	const double bank_angle_rad = std::clamp( track_options.banking_angle_deg, -45.0, 45.0 ) * std::numbers::pi / 180.0;
 	double seed_x = rng.random_double() * 10000.0;
 	double seed_y = rng.random_double() * 10000.0;
+	std::size_t work_count = 0;
 
 	for ( double x = world_target.min_x; x <= world_target.max_x + 0.01; x += step_x ) {
 		for ( double y = world_target.min_y; y <= world_target.max_y + 0.01; y += step_y ) {
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				return {};
+			}
 			const auto local = world_to_local_track_point( start_port, x, y );
 			const double local_x = local.first;
 			const double local_y = local.second;
@@ -871,16 +932,21 @@ TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_t
 
 	if ( !track_options.smooth_track && !grid.empty() ) {
 		const std::size_t cell_count = grid.size();
+		bool cancelled = false;
 		const int lap_iters = clamp_iteration_count( post_process.laplacian_iterations, cell_count );
 		for ( int i = 0; i < lap_iters; ++i ) {
-			if ( laplacian_pass( grid, width, height, terrace_step ) < 0.05 ) {
+			if ( continue_callback && !continue_callback() ) return {};
+			if ( laplacian_pass( grid, width, height, terrace_step, continue_callback, work_count, cancelled ) < 0.05 ) {
+				if ( cancelled ) return {};
 				break;
 			}
 		}
 
 		const int thermal_iters = clamp_iteration_count( post_process.thermal_iterations, cell_count );
 		for ( int i = 0; i < thermal_iters; ++i ) {
-			if ( thermal_pass( grid, width, height, terrace_step ) < 0.02 ) {
+			if ( continue_callback && !continue_callback() ) return {};
+			if ( thermal_pass( grid, width, height, terrace_step, continue_callback, work_count, cancelled ) < 0.02 ) {
+				if ( cancelled ) return {};
 				break;
 			}
 		}
@@ -888,7 +954,9 @@ TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_t
 		TerrainRng hydraulic_rng( mix_seed( static_cast<std::uint32_t>( seed ), 0x74726163U ) );
 		const int hydraulic_iters = clamp_iteration_count( post_process.hydraulic_iterations, cell_count );
 		for ( int i = 0; i < hydraulic_iters; ++i ) {
-			if ( hydraulic_pass( grid, width, height, terrace_step, hydraulic_rng ) < 0.02 ) {
+			if ( continue_callback && !continue_callback() ) return {};
+			if ( hydraulic_pass( grid, width, height, terrace_step, hydraulic_rng, continue_callback, work_count, cancelled ) < 0.02 ) {
+				if ( cancelled ) return {};
 				break;
 			}
 		}
@@ -897,6 +965,7 @@ TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_t
 	std::size_t index = 0;
 	for ( double x = world_target.min_x; x <= world_target.max_x + 0.01; x += step_x ) {
 		for ( double y = world_target.min_y; y <= world_target.max_y + 0.01; y += step_y ) {
+			if ( !generation_checkpoint( continue_callback, work_count ) ) return {};
 			result.height_map[{ round2( x ), round2( y ) }] = std::round( grid[index++] );
 		}
 	}
@@ -910,11 +979,12 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
                                               const MaskMap& mask_map,
                                               NoiseType noise_type, double terrace_step,
                                               const PostProcessSettings& post_process,
-                                              int seed ){
+                                              int seed,
+                                              const TerrainContinueCallback& continue_callback ){
 	return generate_track_section_maps_from_port( target, target, step_x, step_y, track_options,
 	                                             make_track_start_port( target, track_options ),
 	                                             variance, frequency, mask_map, noise_type, terrace_step,
-	                                             post_process, seed );
+	                                             post_process, seed, continue_callback );
 }
 
 // ---------------------------------------------------------------------------
@@ -926,7 +996,8 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
                                         double variance, double frequency,
                                         const MaskMap& mask_map,
                                         NoiseType noise_type, double terrace_step,
-                                        int seed ){
+                                        int seed,
+                                        const TerrainContinueCallback& continue_callback ){
 	TunnelMaps result;
 	const std::uint32_t base_seed = static_cast<std::uint32_t>( seed );
 	TerrainRng floor_rng( mix_seed( base_seed, 0x1f123bb5U ) );
@@ -943,10 +1014,14 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 
 	double center_x  = ( target.min_x + target.max_x ) / 2.0;
 	double half_width = target.width_x / 2.0;
+	std::size_t work_count = 0;
 
 	// Floor and ceiling
 	for ( double x = target.min_x; x <= target.max_x + 0.01; x += step_x ) {
 		for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				return {};
+			}
 			double t = half_width > 0 ? std::min( 1.0, std::abs( x - center_x ) / half_width ) : 0.0;
 			double blend = 1.0 - std::sqrt( std::max( 0.0, 1.0 - t * t ) );
 
@@ -999,6 +1074,9 @@ TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, 
 	// Left and right walls — grid over (Y, Z)
 	for ( double y = target.min_y; y <= target.max_y + 0.01; y += step_y ) {
 		for ( double z = wall_min_z; z <= wall_max_z + 0.01; z += step_z ) {
+			if ( !generation_checkpoint( continue_callback, work_count ) ) {
+				return {};
+			}
 			double ry = round2( y );
 			double rz = round2( z );
 

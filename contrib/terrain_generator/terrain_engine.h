@@ -6,6 +6,9 @@
 #include <utility>
 #include <tuple>
 #include <vector>
+#include <functional>
+
+using TerrainContinueCallback = std::function<bool()>;
 
 using HeightMap   = std::map<std::pair<double, double>, double>;
 using WallMap     = std::map<std::pair<double, double>, double>;
@@ -129,14 +132,16 @@ HeightMap generate_height_map( const BrushData& target, double step_x, double st
                                 double curve_radius, double banking_angle_deg,
                                 double ramp_length,
                                 const PostProcessSettings& post_process,
-                                int seed );
+                                int seed,
+                                const TerrainContinueCallback& continue_callback = {} );
 
 TunnelMaps generate_tunnel_height_maps( const BrushData& target, double step_x, double step_y,
                                         double cave_height, double slope_height,
                                         double variance, double frequency,
                                         const MaskMap& mask_map,
                                         NoiseType noise_type, double terrace_step,
-                                        int seed );
+                                        int seed,
+                                        const TerrainContinueCallback& continue_callback = {} );
 
 TrackSectionMaps generate_track_section_maps( const BrushData& target, double step_x, double step_y,
                                               const TrackSectionOptions& track_options,
@@ -144,7 +149,8 @@ TrackSectionMaps generate_track_section_maps( const BrushData& target, double st
                                               const MaskMap& mask_map,
                                               NoiseType noise_type, double terrace_step,
                                               const PostProcessSettings& post_process,
-                                              int seed );
+                                              int seed,
+                                              const TerrainContinueCallback& continue_callback = {} );
 
 BrushData make_track_segment_bounds( const BrushData& section_template,
                                      const TrackSectionOptions& track_options,
@@ -159,7 +165,8 @@ TrackSectionMaps generate_track_section_maps_from_port( const BrushData& world_t
                                                         const MaskMap& mask_map,
                                                         NoiseType noise_type, double terrace_step,
                                                         const PostProcessSettings& post_process,
-                                                        int seed );
+                                                        int seed,
+                                                        const TerrainContinueCallback& continue_callback = {} );
 
 TrackPort make_track_start_port( const BrushData& target, const TrackSectionOptions& track_options );
 

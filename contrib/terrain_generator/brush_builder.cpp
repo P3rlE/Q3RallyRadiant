@@ -10,6 +10,7 @@
 #include "scenelib.h"
 #include <memory>
 #include <cmath>
+#include <limits>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -186,6 +187,9 @@ static const char* choose_material( const TerrainMaterialSlots& slots, const Ter
 		return slots.base;
 	}
 
+	if ( has_steep && slope_deg >= rules.steep_angle_deg ) {
+		return slots.steep;
+	}
 	if ( has_track && avg_height_percent >= rules.track_min_percent && avg_height_percent <= rules.track_max_percent ) {
 		return slots.track;
 	}
@@ -194,9 +198,6 @@ static const char* choose_material( const TerrainMaterialSlots& slots, const Ter
 	}
 	if ( has_peak && avg_height_percent >= rules.peak_min_percent ) {
 		return slots.peak;
-	}
-	if ( has_steep && slope_deg >= rules.steep_angle_deg ) {
-		return slots.steep;
 	}
 	return slots.base;
 }
@@ -233,7 +234,7 @@ static SurfaceKind dominant_surface( SurfaceKind a, SurfaceKind b, SurfaceKind c
 // Standard terrain
 // ---------------------------------------------------------------------------
 
-void build_terrain_brushes( const BrushData& target, double step_x, double step_y,
+bool build_terrain_brushes( const BrushData& target, double step_x, double step_y,
                              const HeightMap& height_map, const char* top_texture,
                              const TerrainMaterialSlots& material_slots,
                              const TerrainMaterialRules& material_rules,
@@ -254,6 +255,18 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
 	}
 	double min_z      = target.min_z;
 	double base_max_z = target.max_z;
+	bool cancelled = false;
+	std::size_t work_count = 0;
+	double generated_min_z = target.min_z;
+	double generated_max_z = target.max_z;
+	if ( !height_map.empty() ) {
+		generated_min_z = std::numeric_limits<double>::max();
+		generated_max_z = std::numeric_limits<double>::lowest();
+		for ( const auto& entry : height_map ) {
+			generated_min_z = std::min( generated_min_z, entry.second );
+			generated_max_z = std::max( generated_max_z, entry.second );
+		}
+	}
 
 	auto r2 = []( double v ) { return std::round( v * 100.0 ) / 100.0; };
 
@@ -261,6 +274,10 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
 	for ( double x = target.min_x; x < target.max_x - 0.01; x += step_x, ++x_index ) {
 		int y_index = 0;
 		for ( double y = target.min_y; y < target.max_y - 0.01; y += step_y, ++y_index ) {
+			if ( options.continue_callback && ( ++work_count & 0x3fU ) == 0U && !options.continue_callback() ) {
+				cancelled = true;
+				break;
+			}
 			double mx = x + step_x < target.max_x ? x + step_x : target.max_x;
 			double my = y + step_y < target.max_y ? y + step_y : target.max_y;
 
@@ -286,14 +303,12 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
 			SurfaceKind s_tr = lookup_surface( mx, my );
 
 			bool alt_dir = ( ( x_index + y_index ) % 2 ) != 0;
-			const double min_h = target.min_z;
-			const double max_h = target.max_z;
-			const double denom = std::max( 1.0, max_h - min_h );
+			const double denom = std::max( 1.0, generated_max_z - generated_min_z );
 
 			const double avg_a = !alt_dir ? ( z_bl + z_tl + z_br ) / 3.0 : ( z_tl + z_tr + z_bl ) / 3.0;
 			const double avg_b = !alt_dir ? ( z_tr + z_br + z_tl ) / 3.0 : ( z_tr + z_br + z_bl ) / 3.0;
-			const double avg_a_pct = clamp01( ( avg_a - min_h ) / denom ) * 100.0;
-			const double avg_b_pct = clamp01( ( avg_b - min_h ) / denom ) * 100.0;
+			const double avg_a_pct = clamp01( ( avg_a - generated_min_z ) / denom ) * 100.0;
+			const double avg_b_pct = clamp01( ( avg_b - generated_min_z ) / denom ) * 100.0;
 
 			const double slope_a = !alt_dir
 				? triangle_slope_deg( x, y, z_bl, x, my, z_tl, mx, y, z_br )
@@ -317,9 +332,13 @@ void build_terrain_brushes( const BrushData& target, double step_x, double step_
 			                   z_bl, z_tl, z_br, z_tr,
 			                   top_tex_a, top_tex_b, caulk, split_diagonally, alt_dir );
 		}
+		if ( cancelled ) {
+			break;
+		}
 	}
 
 	SceneChangeNotify();
+	return !cancelled;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +513,7 @@ static void insert_wall_brush( scene::Node& entity,
 	}
 }
 
-void build_tunnel_brushes( const BrushData& target, double step_x, double step_y,
+bool build_tunnel_brushes( const BrushData& target, double step_x, double step_y,
                             const TunnelMaps& maps, const char* top_texture,
                             const TerrainMaterialSlots& material_slots,
                             const TerrainMaterialRules& material_rules,
@@ -524,6 +543,19 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 	// so the ceiling peak is always at the high end of the slope.
 	double max_ceil_z    = target.max_z + cave_height + std::max( 0.0, slope_height );
 	double ceil_solid_top = max_ceil_z + target.height_z;
+	double generated_min_z = target.min_z;
+	double generated_max_z = max_ceil_z;
+	for ( const auto& entry : maps.floor_map ) {
+		generated_min_z = std::min( generated_min_z, entry.second );
+		generated_max_z = std::max( generated_max_z, entry.second );
+	}
+	for ( const auto& entry : maps.ceiling_map ) {
+		generated_min_z = std::min( generated_min_z, entry.second );
+		generated_max_z = std::max( generated_max_z, entry.second );
+	}
+	const double generated_height_denom = std::max( 1.0, generated_max_z - generated_min_z );
+	bool cancelled = false;
+	std::size_t work_count = 0;
 
 	auto r2 = []( double v ) { return std::round( v * 100.0 ) / 100.0; };
 
@@ -532,6 +564,10 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 	for ( double x = target.min_x; x < target.max_x - 0.01; x += step_x, ++x_index ) {
 		int y_index = 0;
 		for ( double y = target.min_y; y < target.max_y - 0.01; y += step_y, ++y_index ) {
+			if ( options.continue_callback && ( ++work_count & 0x3fU ) == 0U && !options.continue_callback() ) {
+				cancelled = true;
+				break;
+			}
 			double mx = x + step_x < target.max_x ? x + step_x : target.max_x;
 			double my = y + step_y < target.max_y ? y + step_y : target.max_y;
 
@@ -555,7 +591,6 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 			double c_tr = safe_at( maps.ceiling_map, mx, my, max_ceil_z );
 
 			bool alt_dir = ( ( x_index + y_index ) % 2 ) != 0;
-			const double h_denom = std::max( 1.0, target.max_z - target.min_z );
 			const double f_avg_a = !alt_dir ? ( f_bl + f_tl + f_br ) / 3.0 : ( f_tl + f_tr + f_bl ) / 3.0;
 			const double f_avg_b = !alt_dir ? ( f_tr + f_br + f_tl ) / 3.0 : ( f_tr + f_br + f_bl ) / 3.0;
 			const double c_avg_a = !alt_dir ? ( c_bl + c_tl + c_br ) / 3.0 : ( c_tl + c_tr + c_bl ) / 3.0;
@@ -574,10 +609,10 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 				? triangle_slope_deg( mx, my, c_tr, mx, y, c_br, x, my, c_tl )
 				: triangle_slope_deg( mx, my, c_tr, mx, y, c_br, x, y, c_bl );
 
-			const char* floor_tex_a = choose_material( effective_slots, material_rules, clamp01( ( f_avg_a - target.min_z ) / h_denom ) * 100.0, f_slope_a );
-			const char* floor_tex_b = choose_material( effective_slots, material_rules, clamp01( ( f_avg_b - target.min_z ) / h_denom ) * 100.0, f_slope_b );
-			const char* ceil_tex_a  = choose_material( effective_slots, material_rules, clamp01( ( c_avg_a - target.min_z ) / h_denom ) * 100.0, c_slope_a );
-			const char* ceil_tex_b  = choose_material( effective_slots, material_rules, clamp01( ( c_avg_b - target.min_z ) / h_denom ) * 100.0, c_slope_b );
+			const char* floor_tex_a = choose_material( effective_slots, material_rules, clamp01( ( f_avg_a - generated_min_z ) / generated_height_denom ) * 100.0, f_slope_a );
+			const char* floor_tex_b = choose_material( effective_slots, material_rules, clamp01( ( f_avg_b - generated_min_z ) / generated_height_denom ) * 100.0, f_slope_b );
+			const char* ceil_tex_a  = choose_material( effective_slots, material_rules, clamp01( ( c_avg_a - generated_min_z ) / generated_height_denom ) * 100.0, c_slope_a );
+			const char* ceil_tex_b  = choose_material( effective_slots, material_rules, clamp01( ( c_avg_b - generated_min_z ) / generated_height_denom ) * 100.0, c_slope_b );
 
 			insert_floor_ceil_brush( floor_entity, x, y, mx, my,
 			                         f_bl, f_tl, f_br, f_tr,
@@ -586,6 +621,13 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 			                         c_bl, c_tl, c_br, c_tr,
 			                         min_z, ceil_solid_top, ceil_tex_a, ceil_tex_b, caulk, true, alt_dir );
 		}
+		if ( cancelled ) {
+			break;
+		}
+	}
+	if ( cancelled ) {
+		SceneChangeNotify();
+		return false;
 	}
 
 	// Walls — must match the range generated by terrain_engine.
@@ -601,6 +643,10 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 	for ( double gy = target.min_y; gy < target.max_y - 0.01; gy += step_y, ++gy_index ) {
 		int gz_index = 0;
 		for ( double gz = wall_min_z; gz < wall_max_z - 0.01; gz += step_z, ++gz_index ) {
+			if ( options.continue_callback && ( ++work_count & 0x3fU ) == 0U && !options.continue_callback() ) {
+				cancelled = true;
+				break;
+			}
 			double gmx_y = gy + step_y < target.max_y ? gy + step_y : target.max_y;
 			double gmx_z = gz + step_z < wall_max_z   ? gz + step_z : wall_max_z;
 
@@ -625,7 +671,6 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 			double rx_tr = safe_wall( maps.right_wall_map, gmx_y,  gmx_z,  limit_x );
 
 			bool alt_dir = ( ( gy_index + gz_index ) % 2 ) != 0;
-			const double w_denom = std::max( 1.0, target.max_z - target.min_z );
 			const double l_avg_a = !alt_dir ? ( gz + gmx_z + gz ) / 3.0 : ( gmx_z + gmx_z + gz ) / 3.0;
 			const double l_avg_b = !alt_dir ? ( gmx_z + gz + gmx_z ) / 3.0 : ( gmx_z + gz + gz ) / 3.0;
 			const double r_avg_a = l_avg_a;
@@ -642,17 +687,21 @@ void build_tunnel_brushes( const BrushData& target, double step_x, double step_y
 			const double r_slope_b = !alt_dir
 				? triangle_slope_deg( rx_tr, gmx_y, gmx_z, rx_br, gmx_y, gz, rx_tl, gy, gmx_z )
 				: triangle_slope_deg( rx_tr, gmx_y, gmx_z, rx_br, gmx_y, gz, rx_bl, gy, gz );
-			const char* l_tex_a = choose_material( effective_slots, material_rules, clamp01( ( l_avg_a - target.min_z ) / w_denom ) * 100.0, l_slope_a );
-			const char* l_tex_b = choose_material( effective_slots, material_rules, clamp01( ( l_avg_b - target.min_z ) / w_denom ) * 100.0, l_slope_b );
-			const char* r_tex_a = choose_material( effective_slots, material_rules, clamp01( ( r_avg_a - target.min_z ) / w_denom ) * 100.0, r_slope_a );
-			const char* r_tex_b = choose_material( effective_slots, material_rules, clamp01( ( r_avg_b - target.min_z ) / w_denom ) * 100.0, r_slope_b );
+			const char* l_tex_a = choose_material( effective_slots, material_rules, clamp01( ( l_avg_a - generated_min_z ) / generated_height_denom ) * 100.0, l_slope_a );
+			const char* l_tex_b = choose_material( effective_slots, material_rules, clamp01( ( l_avg_b - generated_min_z ) / generated_height_denom ) * 100.0, l_slope_b );
+			const char* r_tex_a = choose_material( effective_slots, material_rules, clamp01( ( r_avg_a - generated_min_z ) / generated_height_denom ) * 100.0, r_slope_a );
+			const char* r_tex_b = choose_material( effective_slots, material_rules, clamp01( ( r_avg_b - generated_min_z ) / generated_height_denom ) * 100.0, r_slope_b );
 
 			insert_wall_brush( lwall_entity, lx_bl, lx_tl, lx_br, lx_tr,
 			                   gy, gmx_y, gz, gmx_z, outer_left,  limit_x, l_tex_a, l_tex_b, caulk, true,  alt_dir );
 			insert_wall_brush( rwall_entity, rx_bl, rx_tl, rx_br, rx_tr,
 			                   gy, gmx_y, gz, gmx_z, outer_right, limit_x, r_tex_a, r_tex_b, caulk, false, alt_dir );
 		}
+		if ( cancelled ) {
+			break;
+		}
 	}
 
 	SceneChangeNotify();
+	return !cancelled;
 }
