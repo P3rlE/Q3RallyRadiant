@@ -22,19 +22,16 @@
 #include <QPushButton>
 #include <QFileDialog>
 #include <QImage>
+#include <QImageReader>
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QProgressDialog>
-#include <QRadioButton>
 #include <QCoreApplication>
 #include <QSettings>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
-#include <QProcess>
-#include <QElapsedTimer>
-#include <QDateTime>
 #include <QRegularExpression>
 #include <QSet>
 #include <QGroupBox>
@@ -320,7 +317,7 @@ const char* getName(){
 }
 
 const char* getCommandList(){
-	return "About;Generate Terrain;Generate Arena File;Generate Levelshot";
+	return "About;Generate Terrain";
 }
 
 const char* getCommandTitleList(){
@@ -644,17 +641,153 @@ static void generate_arena_file(){
 	dialog.exec();
 }
 
-static bool is_valid_levelshot( const QString& path ){
+static QImage read_tga_screenshot( const QString& path ){
 	QFile file( path );
-	if ( !file.open( QIODevice::ReadOnly ) || file.size() < 18 + 128 * 128 * 3 )
-		return false;
+	if ( !file.open( QIODevice::ReadOnly ) )
+		return QImage();
 	const QByteArray header = file.read( 18 );
 	if ( header.size() != 18 )
-		return false;
+		return QImage();
 	const auto byte_at = [&]( int index ){ return static_cast<unsigned char>( header[index] ); };
+	const int image_type = byte_at( 2 );
 	const int width = byte_at( 12 ) | ( byte_at( 13 ) << 8 );
 	const int height = byte_at( 14 ) | ( byte_at( 15 ) << 8 );
-	return byte_at( 2 ) == 2 && width == 128 && height == 128 && byte_at( 16 ) == 24;
+	const int bits_per_pixel = byte_at( 16 );
+	if ( byte_at( 1 ) != 0 || ( image_type != 2 && image_type != 10 ) || ( bits_per_pixel != 24 && bits_per_pixel != 32 ) || width <= 0 || height <= 0 || width > 32768 || height > 32768 || static_cast<qint64>( width ) * height > 100000000 )
+		return QImage();
+
+	const int bytes_per_pixel = bits_per_pixel / 8;
+	if ( !file.seek( 18 + byte_at( 0 ) ) )
+		return QImage();
+	QImage image( width, height, QImage::Format_RGB888 );
+	if ( image.isNull() )
+		return QImage();
+	const qint64 pixel_count = static_cast<qint64>( width ) * height;
+	const bool top_origin = ( byte_at( 17 ) & 0x20 ) != 0;
+	const bool right_origin = ( byte_at( 17 ) & 0x10 ) != 0;
+	auto store_pixel = [&]( int file_x, int file_y, const char* pixel ){
+		const int x = right_origin ? width - 1 - file_x : file_x;
+		const int y = top_origin ? file_y : height - 1 - file_y;
+		auto* destination = image.scanLine( y ) + x * 3;
+		destination[0] = static_cast<unsigned char>( pixel[2] );
+		destination[1] = static_cast<unsigned char>( pixel[1] );
+		destination[2] = static_cast<unsigned char>( pixel[0] );
+	};
+	if ( image_type == 2 ) {
+		const int row_bytes = width * bytes_per_pixel;
+		for ( int file_y = 0; file_y < height; ++file_y ) {
+			const QByteArray row = file.read( row_bytes );
+			if ( row.size() != row_bytes )
+				return QImage();
+			for ( int file_x = 0; file_x < width; ++file_x )
+				store_pixel( file_x, file_y, row.constData() + file_x * bytes_per_pixel );
+		}
+		return image;
+	}
+	qint64 pixel_index = 0;
+	while ( pixel_index < pixel_count ) {
+		int packet_count = 1;
+		bool repeated = false;
+		if ( image_type == 10 ) {
+			const QByteArray packet = file.read( 1 );
+			if ( packet.size() != 1 )
+				return QImage();
+			const unsigned char packet_header = static_cast<unsigned char>( packet[0] );
+			packet_count = ( packet_header & 0x7f ) + 1;
+			repeated = ( packet_header & 0x80 ) != 0;
+			if ( pixel_index + packet_count > pixel_count )
+				return QImage();
+		}
+		if ( repeated ) {
+			const QByteArray pixel = file.read( bytes_per_pixel );
+			if ( pixel.size() != bytes_per_pixel )
+				return QImage();
+			for ( int i = 0; i < packet_count; ++i, ++pixel_index )
+				store_pixel( static_cast<int>( pixel_index % width ), static_cast<int>( pixel_index / width ), pixel.constData() );
+		}
+		else {
+			for ( int i = 0; i < packet_count; ++i ) {
+				const QByteArray pixel = file.read( bytes_per_pixel );
+				if ( pixel.size() != bytes_per_pixel )
+					return QImage();
+				store_pixel( static_cast<int>( pixel_index % width ), static_cast<int>( pixel_index / width ), pixel.constData() );
+				++pixel_index;
+			}
+		}
+	}
+	return image;
+}
+
+static QImage load_screenshot_image( const QString& path, QString& error ){
+	QImageReader reader( path );
+	reader.setAutoTransform( true );
+	QImage image = reader.read();
+	if ( !image.isNull() )
+		return image;
+	if ( QFileInfo( path ).suffix().compare( "tga", Qt::CaseInsensitive ) == 0 ) {
+		image = read_tga_screenshot( path );
+		if ( !image.isNull() )
+			return image;
+	}
+	error = reader.errorString();
+	if ( error.isEmpty() )
+		error = "The file is not a supported image.";
+	return QImage();
+}
+
+static bool save_levelshot_jpeg( const QString& screenshot_path, const QString& output_path, QString& error ){
+	const QString extension = QFileInfo( screenshot_path ).suffix();
+	const bool source_is_jpeg = extension.compare( "jpg", Qt::CaseInsensitive ) == 0 || extension.compare( "jpeg", Qt::CaseInsensitive ) == 0;
+	QFile source_file( screenshot_path );
+	QImage screenshot;
+	if ( source_is_jpeg ) {
+		if ( !source_file.open( QIODevice::ReadOnly ) ) {
+			error = source_file.errorString();
+			return false;
+		}
+		const QByteArray signature = source_file.read( 2 );
+		if ( signature.size() != 2 || static_cast<unsigned char>( signature[0] ) != 0xff || static_cast<unsigned char>( signature[1] ) != 0xd8 ) {
+			error = "The selected JPG/JPEG file has an invalid header.";
+			return false;
+		}
+		if ( !source_file.seek( 0 ) ) {
+			error = source_file.errorString();
+			return false;
+		}
+	}
+	else {
+		screenshot = load_screenshot_image( screenshot_path, error );
+		if ( screenshot.isNull() )
+			return false;
+	}
+
+	QSaveFile output_file( output_path );
+	if ( !output_file.open( QIODevice::WriteOnly ) ) {
+		error = output_file.errorString();
+		return false;
+	}
+	if ( source_is_jpeg ) {
+		while ( !source_file.atEnd() ) {
+			const QByteArray chunk = source_file.read( 65536 );
+			if ( chunk.isEmpty() && source_file.error() != QFileDevice::NoError ) {
+				error = source_file.errorString();
+				return false;
+			}
+			if ( output_file.write( chunk ) != chunk.size() ) {
+				error = output_file.errorString();
+				return false;
+			}
+		}
+	}
+	else if ( !screenshot.save( &output_file, "JPG", 95 ) ) {
+		error = output_file.errorString();
+		return false;
+	}
+	if ( !output_file.commit() ) {
+		error = output_file.errorString();
+		return false;
+	}
+	return true;
 }
 
 static void generate_levelshot(){
@@ -670,181 +803,51 @@ static void generate_levelshot(){
 		QMessageBox::warning( main_window, "Generate Levelshot", QString( "The map must be saved inside the configured game's %1/maps folder.\n\nCurrent folder: %2" ).arg( game_name, context.game_directory.absolutePath() ) );
 		return;
 	}
-	const QString bsp_path = context.game_directory.filePath( QString( "maps/%1.bsp" ).arg( context.map_name ) );
-	if ( !QFileInfo::exists( bsp_path ) ) {
-		QMessageBox::warning( main_window, "Generate Levelshot", QString( "Compile the map first. The BSP was not found:\n%1" ).arg( bsp_path ) );
+
+	QString start_directory = context.game_directory.filePath( "screenshots" );
+	if ( !QDir( start_directory ).exists() )
+		start_directory = context.game_directory.absolutePath();
+	const QString screenshot_path = QFileDialog::getOpenFileName( main_window, "Select Map Screenshot", start_directory, "Images (*.png *.jpg *.jpeg *.tga *.bmp *.webp);;All files (*)" );
+	if ( screenshot_path.isEmpty() )
+		return;
+
+	const QString levelshot_directory = context.game_directory.filePath( "levelshots" );
+	const QString output_path = QDir( levelshot_directory ).filePath( QString( "%1.jpg" ).arg( context.map_name ) );
+	if ( QFileInfo::exists( output_path ) && QMessageBox::question( main_window, "Replace Levelshot", QString( "A levelshot already exists:\n%1\n\nReplace it?" ).arg( output_path ), QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) != QMessageBox::Yes )
+		return;
+
+	QStringList shadowing_images;
+	for ( const QString& extension : { QString( "png" ), QString( "tga" ) } ) {
+		const QString path = QDir( levelshot_directory ).filePath( QString( "%1.%2" ).arg( context.map_name, extension ) );
+		if ( QFileInfo::exists( path ) )
+			shadowing_images.append( path );
+	}
+	if ( !shadowing_images.isEmpty() && QMessageBox::question( main_window, "Replace Older Levelshot", QString( "ioquake3 checks PNG and TGA before JPG, so these existing files would hide the new JPG:\n%1\n\nCreate the JPG and remove these older previews?" ).arg( shadowing_images.join( "\n" ) ), QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) != QMessageBox::Yes )
+		return;
+
+	if ( !QDir().mkpath( levelshot_directory ) ) {
+		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Could not create the levelshots folder:\n%1" ).arg( levelshot_directory ) );
 		return;
 	}
 
-#if defined( WIN32 ) || defined( _WIN32 )
-	const QString engine_key = "engine_win32";
-#else
-	const QString engine_key = "engine_linux";
-#endif
-	const QString engine_path = QString::fromLocal8Bit( GlobalRadiant().getEnginePath() );
-	const QString engine_name = QString::fromLocal8Bit( GlobalRadiant().getRequiredGameDescriptionKeyValue( engine_key.toLocal8Bit().constData() ) );
-	QSettings settings( "Q3Rally", "RadiantTerrainGenerator" );
-	QString default_executable = settings.value( "levelshot/executable", engine_name ).toString().trimmed();
-	if ( default_executable.isEmpty() )
-		default_executable = "q3rally.exe";
-
-	QDialog executable_dialog( main_window, Qt::Dialog | Qt::WindowCloseButtonHint );
-	executable_dialog.setWindowTitle( "Q3Rally Levelshot Capture" );
-	auto* executable_layout = new QVBoxLayout( &executable_dialog );
-	auto* executable_form = new QFormLayout;
-	executable_layout->addLayout( executable_form );
-	auto* executable_edit = new QLineEdit( default_executable );
-	auto* executable_row = new QHBoxLayout;
-	auto* executable_browse = new QPushButton( "Browse..." );
-	executable_row->addWidget( executable_edit );
-	executable_row->addWidget( executable_browse );
-	executable_form->addRow( "Executable name or path:", executable_row );
-	auto* executable_hint = new QLabel( QString( "Relative names are looked up in the Engine Path: %1" ).arg( engine_path ) );
-	executable_hint->setWordWrap( true );
-	executable_layout->addWidget( executable_hint );
-	auto* automatic_capture = new QRadioButton( "Automatic: capture from the map's start position", &executable_dialog );
-	auto* manual_capture = new QRadioButton( "Manual: choose a camera position in Q3Rally", &executable_dialog );
-	const bool manual_capture_default = settings.value( "levelshot/manual_capture", false ).toBool();
-	automatic_capture->setChecked( !manual_capture_default );
-	manual_capture->setChecked( manual_capture_default );
-	executable_layout->addWidget( automatic_capture );
-	executable_layout->addWidget( manual_capture );
-	auto* manual_capture_hint = new QLabel( "Manual: move to the desired view in Q3Rally (use the console command noclip to fly), then run levelshot in the console. Radiant will detect the TGA and close the game.", &executable_dialog );
-	manual_capture_hint->setWordWrap( true );
-	manual_capture_hint->setVisible( manual_capture_default );
-	executable_layout->addWidget( manual_capture_hint );
-	QObject::connect( manual_capture, &QRadioButton::toggled, manual_capture_hint, &QWidget::setVisible );
-	auto* executable_buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
-	executable_layout->addWidget( executable_buttons );
-	QObject::connect( executable_browse, &QPushButton::clicked, &executable_dialog, [&](){
-		QString start_directory = engine_path;
-		const QFileInfo current( executable_edit->text().trimmed() );
-		if ( current.isAbsolute() && current.absoluteDir().exists() )
-			start_directory = current.absolutePath();
-		const QString selected = QFileDialog::getOpenFileName( &executable_dialog, "Select Q3Rally Executable", start_directory, "Executables (*.exe);;All files (*)" );
-		if ( !selected.isEmpty() )
-			executable_edit->setText( selected );
-	} );
-	QObject::connect( executable_buttons, &QDialogButtonBox::accepted, &executable_dialog, &QDialog::accept );
-	QObject::connect( executable_buttons, &QDialogButtonBox::rejected, &executable_dialog, &QDialog::reject );
-	if ( executable_dialog.exec() != QDialog::Accepted )
-		return;
-	const bool use_manual_capture = manual_capture->isChecked();
-	settings.setValue( "levelshot/manual_capture", use_manual_capture );
-
-	const QString executable_value = executable_edit->text().trimmed();
-	const QFileInfo configured_engine( executable_value );
-	const QString executable = configured_engine.isAbsolute() ? configured_engine.absoluteFilePath() : QDir( engine_path ).absoluteFilePath( executable_value );
-	if ( executable_value.isEmpty() || !QFileInfo( executable ).exists() || !QFileInfo( executable ).isFile() ) {
-		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Q3Rally's engine executable was not found:\n%1\n\nCheck the executable name and Radiant Engine Path." ).arg( executable ) );
-		return;
-	}
-	settings.setValue( "levelshot/executable", executable_value );
-
-	QDir home_directory = context.game_directory;
-	if ( !home_directory.cdUp() ) {
-		QMessageBox::critical( main_window, "Generate Levelshot", "Could not determine the game's parent folder." );
-		return;
-	}
-	const QString output_path = context.game_directory.filePath( QString( "levelshots/%1.tga" ).arg( context.map_name ) );
-	const QFileInfo previous_shot( output_path );
-	const qint64 previous_modified = previous_shot.exists() ? previous_shot.lastModified().toMSecsSinceEpoch() : 0;
-	if ( previous_shot.exists() && QMessageBox::question( main_window, "Replace Levelshot", QString( "A levelshot already exists:\n%1\n\nReplace it?" ).arg( output_path ), QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) != QMessageBox::Yes )
-		return;
-
-	QStringList arguments;
-	arguments << "-fs_basepath" << QDir::cleanPath( engine_path )
-		<< "-fs_homepath" << home_directory.absolutePath()
-		<< "-fs_game" << game_name
-		<< "+set" << "g_gametype" << "0"
-		<< "+devmap" << context.map_name;
-	if ( !use_manual_capture )
-		arguments << "+wait" << "120" << "+levelshot";
-
-	QProcess process;
-	process.setWorkingDirectory( engine_path );
-	process.setProcessChannelMode( QProcess::MergedChannels );
-	process.start( executable, arguments, QIODevice::ReadOnly );
-	if ( !process.waitForStarted( 5000 ) ) {
-		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Could not start Q3Rally:\n%1" ).arg( process.errorString() ) );
+	QString write_error;
+	if ( !save_levelshot_jpeg( screenshot_path, output_path, write_error ) ) {
+		QMessageBox::critical( main_window, "Generate Levelshot", QString( "Could not create the levelshot:\n%1\n\n%2" ).arg( output_path, write_error ) );
 		return;
 	}
 
-	const QString progress_text = use_manual_capture
-		? QString( "Map %1 is loading. In Q3Rally, choose the view and run levelshot in the console; Radiant will close the game after capture." ).arg( context.map_name )
-		: QString( "Q3Rally is capturing %1 from the start position. Wait here; Radiant will close the game after capture." ).arg( context.map_name );
-	QProgressDialog progress( progress_text, "Cancel", 0, 0, main_window );
-	progress.setWindowTitle( "Generate Levelshot" );
-	progress.setWindowModality( Qt::ApplicationModal );
-	progress.setMinimumDuration( 0 );
-	progress.show();
-
-	bool captured = false;
-	bool cancelled = false;
-	bool timed_out = false;
-	QElapsedTimer elapsed;
-	elapsed.start();
-	QEventLoop loop;
-	QTimer poll_timer;
-	poll_timer.setInterval( 200 );
-	QObject::connect( &progress, &QProgressDialog::canceled, &loop, [&](){
-		cancelled = true;
-		process.kill();
-		loop.quit();
-	} );
-	QObject::connect( &poll_timer, &QTimer::timeout, &loop, [&](){
-		const QFileInfo shot( output_path );
-		if ( shot.exists() && shot.lastModified().toMSecsSinceEpoch() > previous_modified && is_valid_levelshot( output_path ) ) {
-			captured = true;
-			process.kill();
-			loop.quit();
-			return;
-		}
-		if ( process.state() == QProcess::NotRunning ) {
-			loop.quit();
-			return;
-		}
-		if ( elapsed.elapsed() > ( use_manual_capture ? 600000 : 180000 ) ) {
-			timed_out = true;
-			process.kill();
-			loop.quit();
-		}
-	} );
-	poll_timer.start();
-	loop.exec();
-	poll_timer.stop();
-	if ( process.state() != QProcess::NotRunning ) {
-		process.kill();
-		process.waitForFinished( 3000 );
+	QStringList remove_errors;
+	for ( const QString& path : shadowing_images ) {
+		if ( !QFile::remove( path ) )
+			remove_errors.append( path );
 	}
-	progress.close();
-
-	if ( captured ) {
-		QMessageBox::information( main_window, "Levelshot Created", QString( "Created 128x128 levelshot:\n%1" ).arg( output_path ) );
-	}
-	else if ( cancelled ) {
-		QMessageBox::information( main_window, "Generate Levelshot", "Levelshot generation was cancelled." );
-	}
-	else {
-		QString details = QString::fromLocal8Bit( process.readAll() ).trimmed();
-		QString message = timed_out
-			? ( use_manual_capture ? "Q3Rally did not produce a levelshot within ten minutes." : "Q3Rally did not produce a levelshot within three minutes." )
-			: "Q3Rally exited without producing a new valid levelshot.";
-		if ( !details.isEmpty() )
-			message += QString( "\n\nEngine output:\n%1" ).arg( details.left( 1600 ) );
-		QMessageBox::warning( main_window, "Generate Levelshot", message );
-	}
+	QString message = QString( "Created levelshot for %1:\n%2\n\nThe image's original resolution was preserved." ).arg( context.map_name, output_path );
+	if ( !remove_errors.isEmpty() )
+		message += QString( "\n\nCould not remove these older previews, which may still take priority:\n%1" ).arg( remove_errors.join( "\n" ) );
+	QMessageBox::information( main_window, "Levelshot Created", message );
 }
 
 void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush ){
-	if ( string_equal( command, "Generate Arena File" ) ) {
-		generate_arena_file();
-		return;
-	}
-	if ( string_equal( command, "Generate Levelshot" ) ) {
-		generate_levelshot();
-		return;
-	}
 	if ( string_equal( command, "About" ) ) {
 		const QString seed_text = g_has_last_seed ? QString::number( g_last_seed ) : "N/A";
 		const QString about_text =
@@ -2402,6 +2405,32 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 	}
 }
 
+const char* getArenaGeneratorName(){
+	return "ArenaFileGenerator";
+}
+
+const char* getArenaGeneratorCommandList(){
+	return "Generate Arena File";
+}
+
+void dispatch_arena_generator( const char* command, float*, float*, bool ){
+	if ( string_equal( command, "Generate Arena File" ) )
+		generate_arena_file();
+}
+
+const char* getLevelshotGeneratorName(){
+	return "LevelshotGenerator";
+}
+
+const char* getLevelshotGeneratorCommandList(){
+	return "Create Levelshot from Screenshot";
+}
+
+void dispatch_levelshot_generator( const char* command, float*, float*, bool ){
+	if ( string_equal( command, "Create Levelshot from Screenshot" ) )
+		generate_levelshot();
+}
+
 } // namespace terrain_generator
 
 class TerrainGeneratorDependencies :
@@ -2445,7 +2474,55 @@ public:
 typedef SingletonModule<TerrainGeneratorModule, TerrainGeneratorDependencies> SingletonTerrainGeneratorModule;
 SingletonTerrainGeneratorModule g_TerrainGeneratorModule;
 
+class ArenaFileGeneratorModule : public TypeSystemRef
+{
+	_QERPluginTable m_plugin;
+public:
+	typedef _QERPluginTable Type;
+	STRING_CONSTANT( Name, "ArenaFileGenerator" );
+
+	ArenaFileGeneratorModule(){
+		m_plugin.m_pfnQERPlug_Init                = &terrain_generator::init;
+		m_plugin.m_pfnQERPlug_GetName             = &terrain_generator::getArenaGeneratorName;
+		m_plugin.m_pfnQERPlug_GetCommandList      = &terrain_generator::getArenaGeneratorCommandList;
+		m_plugin.m_pfnQERPlug_GetCommandTitleList = &terrain_generator::getCommandTitleList;
+		m_plugin.m_pfnQERPlug_Dispatch            = &terrain_generator::dispatch_arena_generator;
+	}
+
+	_QERPluginTable* getTable(){
+		return &m_plugin;
+	}
+};
+
+typedef SingletonModule<ArenaFileGeneratorModule, TerrainGeneratorDependencies> SingletonArenaFileGeneratorModule;
+SingletonArenaFileGeneratorModule g_ArenaFileGeneratorModule;
+
+class LevelshotGeneratorModule : public TypeSystemRef
+{
+	_QERPluginTable m_plugin;
+public:
+	typedef _QERPluginTable Type;
+	STRING_CONSTANT( Name, "LevelshotGenerator" );
+
+	LevelshotGeneratorModule(){
+		m_plugin.m_pfnQERPlug_Init                = &terrain_generator::init;
+		m_plugin.m_pfnQERPlug_GetName             = &terrain_generator::getLevelshotGeneratorName;
+		m_plugin.m_pfnQERPlug_GetCommandList      = &terrain_generator::getLevelshotGeneratorCommandList;
+		m_plugin.m_pfnQERPlug_GetCommandTitleList = &terrain_generator::getCommandTitleList;
+		m_plugin.m_pfnQERPlug_Dispatch            = &terrain_generator::dispatch_levelshot_generator;
+	}
+
+	_QERPluginTable* getTable(){
+		return &m_plugin;
+	}
+};
+
+typedef SingletonModule<LevelshotGeneratorModule, TerrainGeneratorDependencies> SingletonLevelshotGeneratorModule;
+SingletonLevelshotGeneratorModule g_LevelshotGeneratorModule;
+
 extern "C" void RADIANT_DLLEXPORT Radiant_RegisterModules( ModuleServer& server ){
 	initialiseModule( server );
 	g_TerrainGeneratorModule.selfRegister();
+	g_ArenaFileGeneratorModule.selfRegister();
+	g_LevelshotGeneratorModule.selfRegister();
 }
