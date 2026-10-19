@@ -93,6 +93,7 @@
 #include "autosave.h"
 #include "build.h"
 #include "brushmanip.h"
+#include "brushnode.h"
 #include "camwindow.h"
 #include "csg.h"
 #include "commands.h"
@@ -110,6 +111,7 @@
 #include "map.h"
 #include "mru.h"
 #include "patchmanip.h"
+#include "patch.h"
 #include "plugin.h"
 #include "pluginmanager.h"
 #include "pluginmenu.h"
@@ -147,6 +149,9 @@
 #include <set>
 #include <unordered_map>
 #include <limits>
+#include <functional>
+#include <cerrno>
+#include <utility>
 
 
 // VFS
@@ -1219,13 +1224,16 @@ struct AssetReference
 	AssetKind kind{};
 	CopiedString key;
 	CopiedString value;
+	std::function<void(const char*)> setValue;
+	bool surfaceShader = false;
 };
 
 struct MissingAsset
 {
 	AssetKind kind{};
 	CopiedString requested;
-	std::vector<AssetReference*> refs;
+	bool surfaceShader = false;
+	std::vector<AssetReference> refs;
 	std::vector<CopiedString> candidates;
 };
 
@@ -1286,46 +1294,101 @@ void AssetResolver_saveRemaps( AssetKind kind, const AssetRemapTable& remaps ){
 class AssetReferenceCollector : public scene::Graph::Walker
 {
 	std::vector<AssetReference>& m_refs;
+	class SurfaceShaderVisitor final : public BrushVisitor
+	{
+		std::vector<AssetReference>& m_refs;
+	public:
+		SurfaceShaderVisitor( std::vector<AssetReference>& refs ) : m_refs( refs ){
+		}
+		void visit( Face& face ) const override {
+			if ( string_empty( face.GetShader() ) ) {
+				return;
+			}
+			AssetReference ref;
+			ref.kind = AssetKind::Texture;
+			ref.key = "surface";
+			ref.value = StringStream( PathCleaned( face.GetShader() ) ).c_str();
+			ref.setValue = [&face]( const char* value ){ face.SetShader( value ); };
+			ref.surfaceShader = true;
+			m_refs.push_back( std::move( ref ) );
+		}
+	};
 public:
 	AssetReferenceCollector( std::vector<AssetReference>& refs ) : m_refs( refs ){
 	}
 	bool pre( const scene::Path& path, scene::Instance& instance ) const override {
 		(void)instance;
 		Entity* ent = Node_getEntity( path.top() );
-		if ( !ent ) {
-			return true;
+		if ( ent ) {
+			class KeyWalker : public Entity::Visitor
+			{
+				Entity* m_entity;
+				std::vector<AssetReference>& m_refs;
+			public:
+				KeyWalker( Entity* entity, std::vector<AssetReference>& refs ) : m_entity( entity ), m_refs( refs ){
+				}
+				void visit( const char* key, const char* value ) override {
+					if ( string_empty( value ) ) {
+						return;
+					}
+					AssetKind kind;
+					if ( string_equal( key, "model" ) ) {
+						kind = AssetKind::Model;
+					}
+					else if ( string_equal( key, "sound" ) ) {
+						kind = AssetKind::Sound;
+					}
+					else if ( string_equal( key, "texture" ) ) {
+						kind = AssetKind::Texture;
+					}
+					else{
+						return;
+					}
+					AssetReference ref;
+					ref.entity = m_entity;
+					ref.kind = kind;
+					ref.key = key;
+					ref.value = StringStream( PathCleaned( value ) ).c_str();
+					const std::string entityKey = key;
+					ref.setValue = [entity = m_entity, entityKey]( const char* replacement ){
+						entity->setKeyValue( entityKey.c_str(), replacement );
+					};
+					m_refs.push_back( std::move( ref ) );
+				}
+			} keys( ent, m_refs );
+			ent->forEachKeyValue( keys );
 		}
-		class KeyWalker : public Entity::Visitor
-		{
-			Entity* m_entity;
-			std::vector<AssetReference>& m_refs;
-		public:
-			KeyWalker( Entity* entity, std::vector<AssetReference>& refs ) : m_entity( entity ), m_refs( refs ){
+
+		if ( Brush* brush = Node_getBrush( path.top() ) ) {
+			SurfaceShaderVisitor visitor( m_refs );
+			brush->forEachFace( visitor );
+		}
+		if ( Patch* patch = Node_getPatch( path.top() ) ) {
+			if ( !string_empty( patch->GetShader() ) ) {
+				AssetReference ref;
+				ref.kind = AssetKind::Texture;
+				ref.key = "patch";
+				ref.value = StringStream( PathCleaned( patch->GetShader() ) ).c_str();
+				ref.setValue = [patch]( const char* value ){ patch->SetShader( value ); };
+				ref.surfaceShader = true;
+				m_refs.push_back( std::move( ref ) );
 			}
-			void visit( const char* key, const char* value ) override {
-				if ( string_empty( value ) ) {
-					return;
-				}
-				AssetKind kind;
-				if ( string_equal( key, "model" ) ) {
-					kind = AssetKind::Model;
-				}
-				else if ( string_equal( key, "sound" ) ) {
-					kind = AssetKind::Sound;
-				}
-				else if ( string_equal( key, "texture" ) ) {
-					kind = AssetKind::Texture;
-				}
-				else{
-					return;
-				}
-				m_refs.push_back( { m_entity, kind, key, StringStream( PathCleaned( value ) ).c_str() } );
-			}
-		} keys( ent, m_refs );
-		ent->forEachKeyValue( keys );
+		}
 		return true;
 	}
 };
+
+struct AssetShaderNameCollector
+{
+	std::set<std::string>& names;
+	static void add( AssetShaderNameCollector& self, const char* name ){
+		if ( !string_empty( name ) ) {
+			self.names.insert( StringStream( PathCleaned( name ) ).c_str() );
+		}
+	}
+};
+
+typedef ReferenceCaller<AssetShaderNameCollector, void(const char*), AssetShaderNameCollector::add> AssetShaderNameCollectorCaller;
 
 std::vector<CopiedString> AssetResolver_collectVfsFiles(){
 	struct CollectVisitor : public Archive::Visitor
@@ -1372,6 +1435,13 @@ bool AssetResolver_existsInVfs( const char* path ){
 	return false;
 }
 
+bool AssetResolver_referenceExists( const AssetReference& ref, const char* value, const std::set<std::string>& shaderNames ){
+	if ( ref.surfaceShader ) {
+		return shaderNames.find( StringStream( PathCleaned( value ) ).c_str() ) != shaderNames.end();
+	}
+	return AssetResolver_existsInVfs( value );
+}
+
 std::vector<CopiedString> AssetResolver_findCandidates( AssetKind kind, const char* requested, const std::vector<CopiedString>& files ){
 	const QString req = requested;
 	const QString reqLower = req.toLower();
@@ -1401,11 +1471,44 @@ std::vector<CopiedString> AssetResolver_findCandidates( AssetKind kind, const ch
 	return exact;
 }
 
+std::vector<CopiedString> AssetResolver_findShaderCandidates( const char* requested, const std::set<std::string>& shaderNames ){
+	const QString req = requested;
+	const QString reqLower = req.toLower();
+	const QString base = QFileInfo( req ).fileName().toLower();
+	std::vector<CopiedString> exact, nocase, basename;
+	for ( const std::string& name : shaderNames )
+	{
+		const QString candidate = QString::fromStdString( name );
+		const QString candidateLower = candidate.toLower();
+		if ( candidate == req ) {
+			exact.emplace_back( name.c_str() );
+		}
+		else if ( candidateLower == reqLower ) {
+			nocase.emplace_back( name.c_str() );
+		}
+		else if ( QFileInfo( candidate ).fileName().toLower() == base ) {
+			basename.emplace_back( name.c_str() );
+		}
+	}
+	exact.insert( exact.end(), nocase.begin(), nocase.end() );
+	exact.insert( exact.end(), basename.begin(), basename.end() );
+	if ( exact.size() > 24 ) {
+		exact.resize( 24 );
+	}
+	return exact;
+}
+
 void AssetResolver_applyReplacement( MissingAsset& missing, const char* replacement, bool copyFileToProject ){
 	const QString replacementQ = replacement;
-	for ( AssetReference* ref : missing.refs )
+	UndoableCommand undo( "q3rallyAssetResolverReplace" );
+	for ( AssetReference& ref : missing.refs )
 	{
-		ref->entity->setKeyValue( ref->key.c_str(), replacement );
+		if ( ref.setValue ) {
+			ref.setValue( replacement );
+		}
+	}
+	if ( missing.surfaceShader ) {
+		return;
 	}
 	if ( !copyFileToProject ) {
 		return;
@@ -1432,7 +1535,8 @@ bool AssetResolver_promptResolve( MissingAsset& missing, AssetRemapTable& remaps
 	dialog.setWindowTitle( "Asset auflösen" );
 	dialog.setMinimumSize( 760, 420 );
 	auto* layout = new QVBoxLayout( &dialog );
-	layout->addWidget( new QLabel( QString( "%1 fehlt: %2" ).arg( AssetKind_toString( missing.kind ), missing.requested.c_str() ) ) );
+	const QString assetLabel = missing.surfaceShader ? QString( "Material" ) : AssetKind_toString( missing.kind );
+	layout->addWidget( new QLabel( QString( "%1 fehlt: %2" ).arg( assetLabel, missing.requested.c_str() ) ) );
 	auto* list = new QListWidget;
 	for ( const CopiedString& candidate : missing.candidates )
 	{
@@ -1444,7 +1548,12 @@ bool AssetResolver_promptResolve( MissingAsset& missing, AssetRemapTable& remaps
 	remember->setChecked( true );
 	layout->addWidget( remember );
 	auto* copyToProject = new QCheckBox( "Datei ins Projektziel kopieren" );
-	layout->addWidget( copyToProject );
+	if ( missing.surfaceShader ) {
+		copyToProject->hide();
+	}
+	else {
+		layout->addWidget( copyToProject );
+	}
 
 	auto* buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
 	buttons->button( QDialogButtonBox::Ok )->setText( "Referenzpfad ersetzen" );
@@ -1469,6 +1578,9 @@ std::vector<MissingAsset> AssetResolver_scanMissingAssets( bool applyRemaps ){
 	GlobalSceneGraph().traverse( collector );
 
 	const auto files = AssetResolver_collectVfsFiles();
+	std::set<std::string> shaderNames;
+	AssetShaderNameCollector shaderNameCollector{ shaderNames };
+	GlobalShaderSystem().foreachShaderName( AssetShaderNameCollectorCaller( shaderNameCollector ) );
 	AssetRemapTable textureRemaps = AssetResolver_loadRemaps( AssetKind::Texture );
 	AssetRemapTable modelRemaps = AssetResolver_loadRemaps( AssetKind::Model );
 	AssetRemapTable soundRemaps = AssetResolver_loadRemaps( AssetKind::Sound );
@@ -1481,35 +1593,43 @@ std::vector<MissingAsset> AssetResolver_scanMissingAssets( bool applyRemaps ){
 	std::vector<MissingAsset> missing;
 	for ( AssetReference& ref : refs )
 	{
-		if ( ref.kind == AssetKind::Texture && string_empty( path_get_extension( ref.value.c_str() ) ) ) {
+		if ( ref.kind == AssetKind::Model && ref.value.c_str()[0] == '*' ) {
+			continue; // Inline BSP submodels are not VFS files.
+		}
+		if ( !ref.surfaceShader && ref.kind == AssetKind::Texture && string_empty( path_get_extension( ref.value.c_str() ) ) ) {
 			continue; // most likely a shader name, not a direct file path
 		}
 
 		AssetRemapTable& remaps = remapsFor( ref.kind );
 		if ( const auto it = remaps.find( ref.value.c_str() ); it != remaps.end() ) {
-			if ( AssetResolver_existsInVfs( it->second.c_str() ) ) {
+			if ( AssetResolver_referenceExists( ref, it->second.c_str(), shaderNames ) ) {
 				if ( applyRemaps ) {
-					ref.entity->setKeyValue( ref.key.c_str(), it->second.c_str() );
+					if ( ref.setValue ) {
+						ref.setValue( it->second.c_str() );
+					}
 				}
 				continue;
 			}
 		}
-		if ( AssetResolver_existsInVfs( ref.value.c_str() ) ) {
+		if ( AssetResolver_referenceExists( ref, ref.value.c_str(), shaderNames ) ) {
 			continue;
 		}
-		const std::string key = std::to_string( static_cast<int>( ref.kind ) ) + ":" + ref.value.c_str();
+		const std::string key = std::to_string( static_cast<int>( ref.kind ) ) + ( ref.surfaceShader ? ":shader:" : ":file:" ) + ref.value.c_str();
 		const auto found = indexByKey.find( key );
 		if ( found == indexByKey.end() ) {
 			MissingAsset item;
 			item.kind = ref.kind;
 			item.requested = ref.value;
-			item.candidates = AssetResolver_findCandidates( ref.kind, ref.value.c_str(), files );
-			item.refs.push_back( &ref );
+			item.surfaceShader = ref.surfaceShader;
+			item.candidates = ref.surfaceShader
+				? AssetResolver_findShaderCandidates( ref.value.c_str(), shaderNames )
+				: AssetResolver_findCandidates( ref.kind, ref.value.c_str(), files );
+			item.refs.push_back( ref );
 			indexByKey.emplace( key, missing.size() );
 			missing.push_back( item );
 		}
 		else{
-			missing[found->second].refs.push_back( &ref );
+			missing[found->second].refs.push_back( ref );
 		}
 	}
 
@@ -1579,9 +1699,13 @@ struct RallyEntityInfo
 {
 	Entity* entity{};
 	CopiedString classname;
+	CopiedString sequenceKey;
 	int order{};
 	bool hasOrder{};
 	bool orderIsValid{};
+	int pathId{};
+	bool hasPathId{};
+	bool pathIdIsValid = true;
 	CopiedString originRaw;
 	Vector3 origin{ 0, 0, 0 };
 	bool hasOrigin{};
@@ -1598,6 +1722,7 @@ struct RallyPreflightIssue
 	QString quickFixLabel;
 	QString quickFixSuggestion;
 	CopiedString quickFixClassname;
+	int quickFixPathId = -1;
 };
 
 struct RallyPreflightReport
@@ -1644,13 +1769,37 @@ public:
 		info.entity = ent;
 		info.classname = classname;
 
-		const char* orderStr = ent->getKeyValue( "order" );
+		const bool isCheckpoint = string_equal( classname, "rally_checkpoint" );
+		info.sequenceKey = isCheckpoint ? "number" : "order";
+		const char* orderStr = ent->getKeyValue( info.sequenceKey.c_str() );
 		info.hasOrder = orderStr && orderStr[0] != '\0';
 		if ( info.hasOrder ) {
 			char* end = nullptr;
+			errno = 0;
 			const long parsed = std::strtol( orderStr, &end, 10 );
-			info.orderIsValid = end != orderStr && end && *end == '\0';
-			info.order = static_cast<int>( parsed );
+			info.orderIsValid = end != orderStr && end && *end == '\0' && errno != ERANGE
+				&& parsed >= std::numeric_limits<int>::min() && parsed <= std::numeric_limits<int>::max();
+			if ( info.orderIsValid ) {
+				info.order = static_cast<int>( parsed );
+			}
+		} else if ( isCheckpoint ) {
+			// Q3Rally defaults a missing checkpoint number to 1.
+			info.order = 1;
+			info.orderIsValid = true;
+		}
+		if ( string_equal( classname, "bot_path_node" ) ) {
+			const char* pathIdStr = ent->getKeyValue( "pathId" );
+			info.hasPathId = pathIdStr && pathIdStr[0] != '\0';
+			if ( info.hasPathId ) {
+				char* end = nullptr;
+				errno = 0;
+				const long parsed = std::strtol( pathIdStr, &end, 10 );
+				info.pathIdIsValid = end != pathIdStr && end && *end == '\0' && errno != ERANGE
+					&& parsed >= std::numeric_limits<int>::min() && parsed <= std::numeric_limits<int>::max();
+				if ( info.pathIdIsValid ) {
+					info.pathId = static_cast<int>( parsed );
+				}
+			}
 		}
 
 		const char* originStr = ent->getKeyValue( "origin" );
@@ -1685,8 +1834,8 @@ QString RallyEntity_describe( const RallyEntityInfo& info ){
 	return QString( "%1 | %2" ).arg( info.classname.c_str(), keys.pairs.join( ", " ) );
 }
 
-void RallyPreflight_addIssue( RallyPreflightReport& report, RallyPreflightSeverity severity, const QString& message, const RallyEntityInfo* info = nullptr, RallyQuickFixType quickFix = RallyQuickFixType::None, const QString& quickFixLabel = QString(), const QString& quickFixSuggestion = QString(), const char* quickFixClassname = "" ){
-	RallyPreflightIssue issue{ severity, message, info ? RallyEntity_describe( *info ) : QString( "(global)" ), info, quickFix, quickFixLabel, quickFixSuggestion, quickFixClassname };
+void RallyPreflight_addIssue( RallyPreflightReport& report, RallyPreflightSeverity severity, const QString& message, const RallyEntityInfo* info = nullptr, RallyQuickFixType quickFix = RallyQuickFixType::None, const QString& quickFixLabel = QString(), const QString& quickFixSuggestion = QString(), const char* quickFixClassname = "", int quickFixPathId = -1 ){
+	RallyPreflightIssue issue{ severity, message, info ? RallyEntity_describe( *info ) : QString( "(global)" ), info, quickFix, quickFixLabel, quickFixSuggestion, quickFixClassname, quickFixPathId };
 	report.issues.push_back( issue );
 }
 
@@ -1708,105 +1857,140 @@ bool RallyPreflight_tryParseOriginSuggestion( const char* raw, QString& canonica
 	return true;
 }
 
+int RallyPreflight_effectivePathId( int pathId ){
+	return std::max( 0, std::min( pathId, 63 ) );
+}
+
+int RallyPreflight_effectiveOrder( const RallyEntityInfo& info ){
+	if ( string_equal( info.classname.c_str(), "bot_path_node" ) ) {
+		return std::max( 0, std::min( info.order, 4095 ) );
+	}
+	return info.order;
+}
+
 void RallyPreflight_validateOrder( const std::vector<RallyEntityInfo>& entities, const char* classname, RallyPreflightReport& report, bool checkRange ){
-	std::map<int, std::vector<const RallyEntityInfo*>> byOrder;
-	int minOrder = 0;
-	int maxOrder = 0;
-	bool hasAnyValidOrder = false;
+	const bool isCheckpoint = string_equal( classname, "rally_checkpoint" );
+	const char* sequenceKey = isCheckpoint ? "number" : "order";
+	std::map<int, std::map<int, std::vector<const RallyEntityInfo*>>> ordersByPath;
 
 	for ( const RallyEntityInfo& info : entities ) {
 		if ( !string_equal( info.classname.c_str(), classname ) ) {
 			continue;
 		}
+		if ( !isCheckpoint && !info.pathIdIsValid ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, "bot_path_node: pathId ist keine gültige Ganzzahl.", &info );
+			continue;
+		}
+		if ( !isCheckpoint && checkRange && ( info.pathId < 0 || info.pathId > 63 ) ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, QString( "bot_path_node: pathId=%1 wird von Q3Rally auf den Bereich 0..63 begrenzt." ).arg( info.pathId ), &info );
+		}
 		if ( !info.hasOrder ) {
-			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: fehlender order Key." ).arg( classname ), &info, RallyQuickFixType::AssignMissingOrder, "order initial setzen" );
-			continue;
-		}
-		if ( !info.orderIsValid ) {
-			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: order ist keine gültige Ganzzahl." ).arg( classname ), &info );
-			continue;
-		}
-
-		if ( checkRange && ( info.order < 0 || info.order > 4096 ) ) {
-			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, QString( "%1: order=%2 liegt außerhalb des empfohlenen Bereichs 0..4096." ).arg( classname ).arg( info.order ), &info );
-		}
-
-		byOrder[info.order].push_back( &info );
-		if ( !hasAnyValidOrder ) {
-			minOrder = maxOrder = info.order;
-			hasAnyValidOrder = true;
-		}
-		else{
-			minOrder = std::min( minOrder, info.order );
-			maxOrder = std::max( maxOrder, info.order );
-		}
-	}
-
-	for ( const auto& [order, sameOrderEntities] : byOrder ) {
-		if ( sameOrderEntities.size() > 1 ) {
-			for ( const RallyEntityInfo* info : sameOrderEntities ) {
-				RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: doppelter order %2." ).arg( classname ).arg( order ), info, RallyQuickFixType::RenumberDuplicateOrders, "Doppelte order neu nummerieren", QString(), classname );
+			if ( !isCheckpoint ) {
+				const int effectivePathId = RallyPreflight_effectivePathId( info.pathId );
+				RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1 pathId=%2: fehlender %3-Key." ).arg( classname ).arg( effectivePathId ).arg( sequenceKey ), &info, RallyQuickFixType::AssignMissingOrder, QString( "%1 initial setzen" ).arg( sequenceKey ), QString(), classname, effectivePathId );
+				continue;
 			}
 		}
-	}
-
-	if ( !hasAnyValidOrder ) {
-		return;
-	}
-
-	std::vector<int> missing;
-	for ( int order = minOrder; order <= maxOrder; ++order ) {
-		if ( byOrder.find( order ) == byOrder.end() ) {
-			missing.push_back( order );
+		if ( !info.orderIsValid ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: %2 ist keine gültige Ganzzahl." ).arg( classname, sequenceKey ), &info );
+			continue;
 		}
+
+		if ( isCheckpoint && info.order < 1 ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "rally_checkpoint: number=%1 muss mindestens 1 sein." ).arg( info.order ), &info );
+		} else if ( checkRange && ( info.order < 0 || ( isCheckpoint ? info.order > 4096 : info.order >= 4096 ) ) ) {
+			const QString range = isCheckpoint ? QString( "1..4096" ) : QString( "0..4095" );
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, QString( "%1: %2=%3 liegt außerhalb des empfohlenen Bereichs %4." ).arg( classname, sequenceKey ).arg( info.order ).arg( range ), &info );
+		}
+
+		const int pathId = isCheckpoint ? 0 : RallyPreflight_effectivePathId( info.pathId );
+		ordersByPath[pathId][RallyPreflight_effectiveOrder( info )].push_back( &info );
 	}
 
-	if ( !missing.empty() ) {
+	for ( const auto& [pathId, byOrder] : ordersByPath ) {
+		const QString scope = isCheckpoint ? QString( classname ) : QString( "%1 pathId=%2" ).arg( classname ).arg( pathId );
+		for ( const auto& [order, sameOrderEntities] : byOrder ) {
+			if ( sameOrderEntities.size() > 1 ) {
+				for ( const RallyEntityInfo* info : sameOrderEntities ) {
+					RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: doppelter %2 %3." ).arg( scope, sequenceKey ).arg( order ), info, RallyQuickFixType::RenumberDuplicateOrders, QString( "Doppelte %1 neu nummerieren" ).arg( sequenceKey ), QString(), classname, isCheckpoint ? -1 : pathId );
+				}
+			}
+		}
+
+		if ( byOrder.empty() ) {
+			continue;
+		}
+
+		std::vector<int> orders;
+		orders.reserve( byOrder.size() );
+		for ( const auto& [order, sameOrderEntities] : byOrder ) {
+			(void)sameOrderEntities;
+			orders.push_back( order );
+		}
+
+		if ( isCheckpoint && orders.front() != 1 ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error,
+				QString( "rally_checkpoint: Nummerierung muss bei 1 beginnen (gefunden: %1)." ).arg( orders.front() ) );
+		}
+
+		if ( !isCheckpoint ) {
+			continue; // Q3Rally sorts bot nodes by order; gaps are allowed.
+		}
+
 		QStringList missingOrders;
-		for ( int order : missing ) {
-			missingOrders << QString::number( order );
+		long long missingCount = 0;
+		for ( std::size_t i = 1; i < orders.size(); ++i ) {
+			const long long gap = static_cast<long long>( orders[i] ) - static_cast<long long>( orders[i - 1] ) - 1;
+			if ( gap <= 0 ) continue;
+			missingCount += gap;
+			if ( missingCount <= 32 ) {
+				for ( long long order = static_cast<long long>( orders[i - 1] ) + 1; order < orders[i] && missingOrders.size() < 32; ++order ) {
+					missingOrders << QString::number( order );
+				}
+			}
 		}
-		RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: order-Lücke(n): %2." ).arg( classname, missingOrders.join( ", " ) ) );
+
+		if ( missingCount > 0 ) {
+			const QString detail = missingCount <= 32
+				? missingOrders.join( ", " )
+				: QString( "%1 fehlende Werte zwischen vorhandenen Nummern" ).arg( missingCount );
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error,
+				QString( "%1: %2-Lücke(n): %3." ).arg( scope, sequenceKey, detail ) );
+		}
 	}
 }
 
-void RallyPreflight_validateRequiredKeys( const std::vector<RallyEntityInfo>& entities, RallyPreflightReport& report ){
+void RallyPreflight_validateRequiredKeys( const std::vector<RallyEntityInfo>& entities, RallyPreflightReport& report, bool orderValidation, bool originValidation ){
 	for ( const RallyEntityInfo& info : entities ) {
-		if ( string_equal( info.classname.c_str(), "rally_checkpoint" ) || string_equal( info.classname.c_str(), "bot_path_node" ) ) {
-			if ( !info.hasOrder ) {
+		if ( string_equal( info.classname.c_str(), "rally_checkpoint" ) && !info.hasOrder ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning,
+				"rally_checkpoint: number fehlt; Q3Rally verwendet den Standardwert 1.", &info );
+		}
+		if ( string_equal( info.classname.c_str(), "bot_path_node" ) ) {
+			if ( !info.hasOrder && !orderValidation ) {
 				RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, QString( "%1: Pflicht-Key fehlt: order." ).arg( info.classname.c_str() ), &info, RallyQuickFixType::AssignMissingOrder, "order initial setzen" );
 			}
 		}
-		if ( !info.hasOrigin ) {
+		if ( !info.hasOrigin && !originValidation ) {
 			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, QString( "%1: Pflicht-Key fehlt: origin." ).arg( info.classname.c_str() ), &info );
 		}
 	}
 }
 
 void RallyPreflight_validateTrackLogic( const std::vector<RallyEntityInfo>& entities, RallyPreflightReport& report ){
-	std::vector<int> nodeOrders;
+	std::map<int, std::vector<int>> nodeOrdersByPath;
 	for ( const RallyEntityInfo& info : entities ) {
-		if ( string_equal( info.classname.c_str(), "bot_path_node" ) && info.hasOrder && info.orderIsValid ) {
-			nodeOrders.push_back( info.order );
+		if ( string_equal( info.classname.c_str(), "bot_path_node" ) && info.pathIdIsValid && info.hasOrder && info.orderIsValid ) {
+			nodeOrdersByPath[RallyPreflight_effectivePathId( info.pathId )].push_back( RallyPreflight_effectiveOrder( info ) );
 		}
 	}
 
-	if ( nodeOrders.empty() ) {
-		return;
-	}
-
-	std::sort( nodeOrders.begin(), nodeOrders.end() );
-	nodeOrders.erase( std::unique( nodeOrders.begin(), nodeOrders.end() ), nodeOrders.end() );
-
-	if ( nodeOrders.size() < 2 ) {
-		RallyPreflight_addIssue( report, RallyPreflightSeverity::Info, "bot_path_node: nur ein valider order vorhanden; Strecke wirkt isoliert." );
-		return;
-	}
-
-	for ( std::size_t i = 1; i < nodeOrders.size(); ++i ) {
-		const int gap = nodeOrders[i] - nodeOrders[i - 1];
-		if ( gap > 1 ) {
-			RallyPreflight_addIssue( report, RallyPreflightSeverity::Info, QString( "bot_path_node: isolierte/redundante Folge vermutet zwischen order %1 und %2." ).arg( nodeOrders[i - 1] ).arg( nodeOrders[i] ) );
+	for ( auto& [pathId, nodeOrders] : nodeOrdersByPath ) {
+		std::sort( nodeOrders.begin(), nodeOrders.end() );
+		nodeOrders.erase( std::unique( nodeOrders.begin(), nodeOrders.end() ), nodeOrders.end() );
+		if ( nodeOrders.size() < 2 ) {
+			RallyPreflight_addIssue( report, RallyPreflightSeverity::Warning, QString( "bot_path_node pathId=%1: weniger als zwei unterschiedliche order-Werte; Q3Rally baut daraus keine Route." ).arg( pathId ) );
+			continue;
 		}
 	}
 }
@@ -1830,13 +2014,10 @@ RallyPreflightReport RallyPreflight_run( const RallyPreflightOptions& options ){
 		if ( report.checkpointCount == 0 ) {
 			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, "Pflicht-Entity fehlt: rally_checkpoint." );
 		}
-		if ( report.botNodeCount == 0 ) {
-			RallyPreflight_addIssue( report, RallyPreflightSeverity::Error, "Pflicht-Entity fehlt: bot_path_node." );
-		}
 	}
 
 	if ( options.requiredKeysByClass ) {
-		RallyPreflight_validateRequiredKeys( report.entities, report );
+		RallyPreflight_validateRequiredKeys( report.entities, report, options.orderValidation, options.originValidation );
 	}
 
 	if ( options.orderValidation ) {
@@ -1948,14 +2129,19 @@ bool RallyPreflight_applyQuickFix( const RallyPreflightIssue& issue, RallyPrefli
 		if ( issue.entity ) {
 			int maxOrder = -1;
 			for ( const RallyEntityInfo& info : report.entities ) {
-				if ( string_equal( info.classname.c_str(), issue.entity->classname.c_str() ) && info.hasOrder && info.orderIsValid ) {
-					maxOrder = std::max( maxOrder, info.order );
+				const bool samePath = !string_equal( issue.entity->classname.c_str(), "bot_path_node" ) || RallyPreflight_effectivePathId( info.pathId ) == RallyPreflight_effectivePathId( issue.entity->pathId );
+				if ( samePath && string_equal( info.classname.c_str(), issue.entity->classname.c_str() ) && info.orderIsValid ) {
+					maxOrder = std::max( maxOrder, RallyPreflight_effectiveOrder( info ) );
 				}
+			}
+			if ( string_equal( issue.entity->classname.c_str(), "bot_path_node" ) && maxOrder >= 4095 ) {
+				status = "Keine freie bot_path_node-order mehr im gültigen Bereich 0..4095.";
+				return false;
 			}
 			UndoableCommand undo( "q3rallyPreflightAssignMissingOrder" );
 			const auto orderText = QString::number( maxOrder + 1 ).toLatin1();
-			issue.entity->entity->setKeyValue( "order", orderText.constData() );
-			status = QString( "order=%1 gesetzt." ).arg( maxOrder + 1 );
+			issue.entity->entity->setKeyValue( issue.entity->sequenceKey.c_str(), orderText.constData() );
+			status = QString( "%1=%2 gesetzt." ).arg( issue.entity->sequenceKey.c_str() ).arg( maxOrder + 1 );
 			return true;
 		}
 		break;
@@ -1963,25 +2149,29 @@ bool RallyPreflight_applyQuickFix( const RallyPreflightIssue& issue, RallyPrefli
 		{
 			std::vector<RallyEntityInfo*> classEntities;
 			for ( RallyEntityInfo& info : report.entities ) {
-				if ( string_equal( info.classname.c_str(), issue.quickFixClassname.c_str() ) && info.entity ) {
+				const bool samePath = !string_equal( issue.quickFixClassname.c_str(), "bot_path_node" ) || RallyPreflight_effectivePathId( info.pathId ) == issue.quickFixPathId;
+				if ( samePath && string_equal( info.classname.c_str(), issue.quickFixClassname.c_str() ) && info.entity ) {
 					classEntities.push_back( &info );
 				}
 			}
 			if ( classEntities.size() > 1 ) {
-				std::sort( classEntities.begin(), classEntities.end(), []( const RallyEntityInfo* a, const RallyEntityInfo* b ){
-					if ( a->hasOrder && a->orderIsValid && b->hasOrder && b->orderIsValid ) {
-						if ( a->order != b->order ) {
-							return a->order < b->order;
-						}
+				const bool isCheckpoint = string_equal( issue.quickFixClassname.c_str(), "rally_checkpoint" );
+				const char* sequenceKey = isCheckpoint ? "number" : "order";
+				std::stable_sort( classEntities.begin(), classEntities.end(), []( const RallyEntityInfo* a, const RallyEntityInfo* b ){
+					const bool aHasOrder = a->hasOrder && a->orderIsValid;
+					const bool bHasOrder = b->hasOrder && b->orderIsValid;
+					if ( aHasOrder != bHasOrder ) {
+						return aHasOrder;
 					}
-					return a->entity < b->entity;
+					return aHasOrder && RallyPreflight_effectiveOrder( *a ) < RallyPreflight_effectiveOrder( *b );
 				} );
 				UndoableCommand undo( "q3rallyPreflightRenumberDuplicateOrder" );
+				const int firstValue = isCheckpoint ? 1 : 0;
 				for ( std::size_t i = 0; i < classEntities.size(); ++i ) {
-					const auto orderText = QString::number( static_cast<int>( i + 1 ) ).toLatin1();
-					classEntities[i]->entity->setKeyValue( "order", orderText.constData() );
+					const auto orderText = QString::number( firstValue + static_cast<int>( i ) ).toLatin1();
+					classEntities[i]->entity->setKeyValue( sequenceKey, orderText.constData() );
 				}
-				status = QString( "%1: order neu von 1..%2 nummeriert." ).arg( issue.quickFixClassname.c_str() ).arg( classEntities.size() );
+				status = QString( "%1: %2 neu von %3..%4 nummeriert." ).arg( issue.quickFixClassname.c_str(), sequenceKey ).arg( firstValue ).arg( firstValue + static_cast<int>( classEntities.size() ) - 1 );
 				return true;
 			}
 		}
@@ -2118,8 +2308,8 @@ void Q3RallyPreflight(){
 	auto* ruleLayout = new QGridLayout( ruleGroup );
 	auto* requiredEntities = new QCheckBox( "Pflicht-Entities" );
 	auto* requiredKeysByClass = new QCheckBox( "Pflicht-Keys pro Klasse" );
-	auto* orderValidation = new QCheckBox( "Order-Konsistenz" );
-	auto* orderRange = new QCheckBox( "Order-Wertebereiche" );
+	auto* orderValidation = new QCheckBox( "Checkpoint-Nummern / Bot-Order" );
+	auto* orderRange = new QCheckBox( "Wertebereiche" );
 	auto* trackLogic = new QCheckBox( "Optionale Streckenlogik" );
 	auto* originValidation = new QCheckBox( "Origin-Prüfungen" );
 	auto* buildGateErrors = new QCheckBox( "Build bei Errors blockieren (optional)" );
@@ -2199,7 +2389,7 @@ void Q3RallyPreflight(){
 		tree->clear();
 		int errors = 0, warnings = 0, infos = 0;
 		RallyPreflight_collectSeverityCounts( report, errors, warnings, infos );
-		headerInfo->setText( QString( "Entities geprüft: %1 (startfinish=%2, checkpoint=%3, bot_path_node=%4)" )
+		headerInfo->setText( QString( "Entities geprüft: %1 (startfinish=%2, checkpoint=%3, optionale bot_path_node=%4)" )
 			                     .arg( report.entities.size() )
 			                     .arg( report.startFinishCount )
 			                     .arg( report.checkpointCount )

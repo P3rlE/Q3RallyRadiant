@@ -13,10 +13,13 @@ struct BotFrame {
 	float time           = 0;
 	int   nodeIndex      = 0;
 	int   routeIndex     = 0;
+	int   pathId         = -1;
 	float actualSpeed    = 0;
 	float routeDeviation = 0;
 	int   collisionRisk  = 0;
 	char  decisionState[32] = {};
+	char  routeSource[16] = {};
+	char  activeRoutePath[128] = {};
 
 	// Direct 3D position (ox/oy/oz) — present in updated log format
 	float ox = 0, oy = 0, oz = 0;
@@ -61,22 +64,25 @@ struct NodeStats {
 // ── Per-frame renderable point ────────────────────────────────────────────────
 
 struct RoutePoint {
-	Vector3 pos;
-	float   r, g, b;
-	bool    isCollision;
+	Vector3 pos = Vector3( 0, 0, 0 );
+	float   r = 0, g = 0, b = 0;
+	bool    isCollision = false;
+	bool    hasPosition = false;
 };
 
 // ── Aggregated route segment buckets (nodeIndex -> next nodeIndex) ──────────
 
 struct RouteBucketStats {
+	char  routeSource[16] = {};
+	int   pathId = -1;
 	int   fromNode = 0;
 	int   toNode = 0;
 	int   sampleCount = 0;
 	float avgSpeed = 0.f;
 	float collisionRate = 0.f;
 	float avgRouteDeviation = 0.f;
-	Vector3 fromPos;
-	Vector3 toPos;
+	Vector3 fromPos = Vector3( 0, 0, 0 );
+	Vector3 toPos = Vector3( 0, 0, 0 );
 	bool    hasFromPos = false;
 	bool    hasToPos = false;
 };
@@ -93,11 +99,15 @@ public:
 	static BotViz& instance();
 
 	int  load( const char* path );
+	int  loadGhostRoute( const char* path );
 	void clear();
 
 	bool  isLoaded()      const { return !m_frames.empty(); }
 	int   frameCount()    const { return (int)m_frames.size(); }
 	bool  hasPositions()  const { return m_hasPositions; }
+	bool  hasRenderablePositions() const { return m_hasRenderablePositions; }
+	bool  isGhostRoute() const { return m_isGhostRoute; }
+	const std::string& sourceDescription() const { return m_sourceDescription; }
 	float duration()      const;
 	float startTime()     const;
 	float endTime()       const;
@@ -139,4 +149,7 @@ private:
 	float                            m_maxSpeed     = 1.f;
 	bool                             m_resolved     = false;
 	bool                             m_hasPositions = false;
+	bool                             m_hasRenderablePositions = false;
+	bool                             m_isGhostRoute = false;
+	std::string                      m_sourceDescription;
 };

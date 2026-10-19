@@ -1,7 +1,7 @@
 /*
 ** BotViz plugin for Q3Rally Radiant
-** Renders bot JSONL debug routes in the 3D camera view.
-** Shows per-node telemetry when a bot_path_node is selected.
+** Renders Q3Rally Ghost routes and bot JSONL telemetry in the 3D camera view.
+** Shows per-node telemetry when a bot_path_node is selected in the map.
 */
 
 #include "botviz.h"
@@ -37,6 +37,8 @@
 #include <QCheckBox>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QDir>
+#include <QByteArray>
 
 #include <map>
 #include <cmath>
@@ -275,12 +277,13 @@ class TimelineDialog : public QDialog {
 	QLabel*  m_lblReplayTime;
 	QLabel*  m_lblPlaybackSpeed;
 	QLabel*  m_lblState;
+	QLabel*  m_lblSource;
 	QLabel*  m_lblLegend;
 	QComboBox* m_modeCombo;
 	QComboBox* m_speedCombo;
 	QPushButton* m_btnPlayPause;
+	QPushButton* m_btnNodeStats = nullptr;
 	QCheckBox* m_chkLoop;
-	QCheckBox* m_chkFollowBot;
 	QTimer* m_playTimer;
 	QElapsedTimer m_elapsed;
 
@@ -301,12 +304,15 @@ public:
 		m_lblReplayTime = new QLabel( "Replay: —" );
 		m_lblPlaybackSpeed = new QLabel( "Playback: 1.00x" );
 		m_lblState = new QLabel( "—" );
+		m_lblSource = new QLabel( "—" );
+		m_lblSource->setWordWrap( true );
 		infoRow->addWidget( m_lblFrame );
 		infoRow->addWidget( m_lblTime );
 		infoRow->addWidget( m_lblReplayTime );
 		infoRow->addWidget( m_lblPlaybackSpeed );
 		infoRow->addWidget( m_lblState );
 		vbox->addLayout( infoRow );
+		vbox->addWidget( m_lblSource );
 
 		m_slider = new QSlider( Qt::Horizontal );
 		m_slider->setMinimum( 0 );
@@ -320,12 +326,9 @@ public:
 		auto* btnStep = new QPushButton( "Step" );
 		connect( btnStep, &QPushButton::clicked, this, &TimelineDialog::onStep );
 		m_chkLoop = new QCheckBox( "Loop" );
-		m_chkFollowBot = new QCheckBox( "Follow bot" );
-		m_chkFollowBot->setToolTip( "Follows replay frame in 3D view (camera movement is currently unavailable in plugin ABI)." );
 		playbackRow->addWidget( m_btnPlayPause );
 		playbackRow->addWidget( btnStep );
 		playbackRow->addWidget( m_chkLoop );
-		playbackRow->addWidget( m_chkFollowBot );
 		playbackRow->addWidget( new QLabel( "Speed:" ) );
 		m_speedCombo = new QComboBox;
 		m_speedCombo->addItem( "0.25x", 0.25 );
@@ -375,8 +378,8 @@ public:
 			SceneChangeNotify();
 		});
 
-		auto* btnNodeStats = new QPushButton( "Node Telemetry" );
-		connect( btnNodeStats, &QPushButton::clicked, []() {
+		m_btnNodeStats = new QPushButton( "Node Telemetry" );
+		connect( m_btnNodeStats, &QPushButton::clicked, []() {
 			if ( g_statsPanel ) {
 				g_statsPanel->show();
 				g_statsPanel->raise();
@@ -399,14 +402,14 @@ public:
 
 			if ( !ok ) {
 				GlobalRadiant().m_pfnMessageBox( this,
-					"Export failed. Ensure a JSONL file is loaded with resolvable route data.",
+					"Export failed. Ensure a route with resolvable route data is loaded.",
 					"BotViz", EMessageBoxType::Error, 0 );
 			}
 		} );
 
 		btnRow->addWidget( btnRefresh );
 		btnRow->addWidget( btnCollisions );
-		btnRow->addWidget( btnNodeStats );
+		btnRow->addWidget( m_btnNodeStats );
 		btnRow->addWidget( btnExport );
 		btnRow->addStretch();
 		vbox->addLayout( btnRow );
@@ -424,6 +427,11 @@ public:
 		BotViz::instance().playhead = 0;
 		m_modeCombo->setCurrentIndex(
 			BotViz::instance().renderMode == BotVizRenderMode::Heatmap ? 1 : 0 );
+		m_lblSource->setText( BotViz::instance().sourceDescription().c_str() );
+		m_lblLegend->setText( BotViz::instance().isGhostRoute()
+			? "Legend (Heatmap): speed on Ghost segments, collision risk on map telemetry"
+			: "Legend (Heatmap): blue = low collision risk, red = high collision risk" );
+		m_btnNodeStats->setEnabled( BotViz::instance().hasNodeStats() );
 		updateLabels( 0 );
 	}
 
@@ -488,18 +496,11 @@ private:
 		m_slider->setValue( value );
 		m_slider->blockSignals( blocked );
 		updateLabels( value );
-		applyFollowBot( value );
 		SceneChangeNotify();
 	}
 
 	void onSlider( int value ) {
 		setPlayhead( value );
-	}
-
-	void applyFollowBot( int frame ) {
-		if ( !m_chkFollowBot || !m_chkFollowBot->isChecked() ) return;
-		// Follow marker is currently visual-only; camera write access is not exposed through plugin ABI.
-		(void)frame;
 	}
 
 	void updateLabels( int frame ) {
@@ -509,7 +510,20 @@ private:
 		m_lblTime->setText(  QString("Frame t=%1s").arg(fr->time, 0, 'f', 2) );
 		m_lblReplayTime->setText( QString("Replay=%1s / %2s").arg(m_playbackTime, 0, 'f', 2).arg(BotViz::instance().endTime(), 0, 'f', 2) );
 		m_lblPlaybackSpeed->setText( QString("Playback: %1x").arg(m_playbackRate, 0, 'f', 2) );
-		m_lblState->setText( QString(fr->decisionState) );
+		const QString source = fr->routeSource[0] ? QString( fr->routeSource ) : QString( "map" );
+		if ( source == "ghost" ) {
+			m_lblState->setText( QString( "Ghost waypoint %1" ).arg( fr->routeIndex ) );
+		}
+		else if ( source == "map" ) {
+			const QString state = fr->decisionState[0] ? QString( fr->decisionState ) : QString( "—" );
+			QString routeLabel = QString( "Map route %1" ).arg( fr->pathId );
+			if ( fr->activeRoutePath[0] ) routeLabel += QString( " · %1" ).arg( fr->activeRoutePath );
+			m_lblState->setText( routeLabel + QString( " · %1" ).arg( state ) );
+		}
+		else {
+			const QString state = fr->decisionState[0] ? QString( fr->decisionState ) : QString( "No active route" );
+			m_lblState->setText( state );
+		}
 	}
 };
 
@@ -545,39 +559,52 @@ const char* getName()            { return "BotViz"; }
 const char* getCommandTitleList(){ return ""; }
 
 const char* getCommandList() {
-	return "Load JSONL...;-;Toggle Route;Toggle Collisions;-;Show Timeline;Node Telemetry";
+	return "Load JSONL...;Load Ghost Route...;-;Toggle Route;Toggle Collisions;-;Show Timeline;Node Telemetry";
 }
 
 void dispatch( const char* command, float*, float*, bool ) {
 
-	if ( string_equal( command, "Load JSONL..." ) ) {
+	if ( string_equal( command, "Load JSONL..." ) || string_equal( command, "Load Ghost Route..." ) ) {
+		const bool loadGhost = string_equal( command, "Load Ghost Route..." );
+		QString initialDirectory = QDir::homePath();
+		const QString appData = QString::fromLocal8Bit( qgetenv( "APPDATA" ) );
+		if ( !appData.isEmpty() ) {
+			const QString userGhostDirectory = QDir( appData ).filePath( "Q3Rally/baseq3r/ghosts" );
+			if ( QDir( userGhostDirectory ).exists() ) initialDirectory = userGhostDirectory;
+		}
 		QString path = QFileDialog::getOpenFileName(
-			main_window, "Load Bot Debug JSONL", QString(),
-			"JSONL files (*.jsonl);;All files (*)" );
+			main_window,
+			loadGhost ? "Load Q3Rally Ghost Route" : "Load Bot Debug JSONL",
+			loadGhost ? initialDirectory : QString(),
+			loadGhost ? "Ghost routes (*.ghost);;All files (*)" : "JSONL files (*.jsonl);;All files (*)" );
 		if ( path.isEmpty() ) return;
 
-		int n = collectNodes();
-		if ( n == 0 ) {
-			GlobalRadiant().m_pfnMessageBox( main_window,
-				"No bot_path_nodes found in the current map.\n"
-				"Load a Q3Rally map first.",
-				"BotViz", EMessageBoxType::Warning, 0 );
-			return;
-		}
+		collectNodes();
 
 		// Hide stats panel during load (stops QTimer)
 		if ( g_statsPanel && g_statsPanel->isVisible() )
 			g_statsPanel->hide();
 
-		int frames = BotViz::instance().load( path.toUtf8().constData() );
-		if ( frames < 0 ) {
+		const QByteArray encodedPath = path.toUtf8();
+		int frames = loadGhost
+			? BotViz::instance().loadGhostRoute( encodedPath.constData() )
+			: BotViz::instance().load( encodedPath.constData() );
+		if ( frames <= 0 ) {
 			GlobalRadiant().m_pfnMessageBox( main_window,
-				"Failed to open JSONL file.",
+				loadGhost
+					? "Could not read this Ghost route. Check its header, frame data, timestamps and file size."
+					: "Could not read bot telemetry JSONL.",
 				"BotViz", EMessageBoxType::Error, 0 );
 			return;
 		}
 
 		BotViz::instance().resolvePositions( g_nodePositions );
+		if ( !BotViz::instance().hasRenderablePositions() ) {
+			GlobalRadiant().m_pfnMessageBox( main_window,
+				"The file contains no usable 3D positions, and this map has no matching bot_path_node positions.",
+				"BotViz", EMessageBoxType::Warning, 0 );
+			return;
+		}
 
 		ensureTimeline();
 		g_timeline->reset( frames );
@@ -603,7 +630,7 @@ void dispatch( const char* command, float*, float*, bool ) {
 	if ( string_equal( command, "Show Timeline" ) ) {
 		if ( !BotViz::instance().isLoaded() ) {
 			GlobalRadiant().m_pfnMessageBox( main_window,
-				"No JSONL loaded yet. Use 'Load JSONL...' first.",
+				"No route loaded yet. Use 'Load JSONL...' or 'Load Ghost Route...' first.",
 				"BotViz", EMessageBoxType::Info, 0 );
 			return;
 		}

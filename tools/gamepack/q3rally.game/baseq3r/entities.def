@@ -2544,6 +2544,21 @@ XML entity definition.
 
 */
 
+/*QUAKED bot_path_node (0 .6 1) ?
+
+Optional legacy route node used by the game bot's map-authored route system.
+Ghost routes are recorded locally by driving and are loaded at runtime; they are not map entities or distributed with maps.
+
+"pathId"              route identifier from 0 to 63, default is 0
+"order"               unique node order within the route from 0 to 4095, default is 0; gaps are allowed
+"targetSpeed"         target speed at this node, default is -1 (automatic)
+"width"               route width in game units, default is 256
+"trackLengthMask"     supported lengths: bit 1 = short, 2 = medium, 4 = long; default is 7 (all)
+"reversed"            direction filter: forward/0, reversed/1, or both, default is forward
+"origin"              node position
+
+*/
+
 /*QUAKED info_observer_spot (0 .9 .1) (-8 -8 -8) (8 8 8) 0 1 2 3
 "target"	info_null or other entity with same targetname used to aim the camera (creates a fixed camera)
 
