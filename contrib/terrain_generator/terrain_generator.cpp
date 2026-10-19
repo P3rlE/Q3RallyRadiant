@@ -25,6 +25,7 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QRadioButton>
 #include <QCoreApplication>
 #include <QSettings>
 #include <QDir>
@@ -688,7 +689,7 @@ static void generate_levelshot(){
 		default_executable = "q3rally.exe";
 
 	QDialog executable_dialog( main_window, Qt::Dialog | Qt::WindowCloseButtonHint );
-	executable_dialog.setWindowTitle( "Q3Rally Executable" );
+	executable_dialog.setWindowTitle( "Q3Rally Levelshot Capture" );
 	auto* executable_layout = new QVBoxLayout( &executable_dialog );
 	auto* executable_form = new QFormLayout;
 	executable_layout->addLayout( executable_form );
@@ -701,6 +702,18 @@ static void generate_levelshot(){
 	auto* executable_hint = new QLabel( QString( "Relative names are looked up in the Engine Path: %1" ).arg( engine_path ) );
 	executable_hint->setWordWrap( true );
 	executable_layout->addWidget( executable_hint );
+	auto* automatic_capture = new QRadioButton( "Automatic: capture from the map's start position", &executable_dialog );
+	auto* manual_capture = new QRadioButton( "Manual: choose a camera position in Q3Rally", &executable_dialog );
+	const bool manual_capture_default = settings.value( "levelshot/manual_capture", false ).toBool();
+	automatic_capture->setChecked( !manual_capture_default );
+	manual_capture->setChecked( manual_capture_default );
+	executable_layout->addWidget( automatic_capture );
+	executable_layout->addWidget( manual_capture );
+	auto* manual_capture_hint = new QLabel( "Manual: move to the desired view in Q3Rally (use the console command noclip to fly), then run levelshot in the console. Radiant will detect the TGA and close the game.", &executable_dialog );
+	manual_capture_hint->setWordWrap( true );
+	manual_capture_hint->setVisible( manual_capture_default );
+	executable_layout->addWidget( manual_capture_hint );
+	QObject::connect( manual_capture, &QRadioButton::toggled, manual_capture_hint, &QWidget::setVisible );
 	auto* executable_buttons = new QDialogButtonBox( QDialogButtonBox::Ok | QDialogButtonBox::Cancel );
 	executable_layout->addWidget( executable_buttons );
 	QObject::connect( executable_browse, &QPushButton::clicked, &executable_dialog, [&](){
@@ -716,6 +729,8 @@ static void generate_levelshot(){
 	QObject::connect( executable_buttons, &QDialogButtonBox::rejected, &executable_dialog, &QDialog::reject );
 	if ( executable_dialog.exec() != QDialog::Accepted )
 		return;
+	const bool use_manual_capture = manual_capture->isChecked();
+	settings.setValue( "levelshot/manual_capture", use_manual_capture );
 
 	const QString executable_value = executable_edit->text().trimmed();
 	const QFileInfo configured_engine( executable_value );
@@ -742,9 +757,9 @@ static void generate_levelshot(){
 		<< "-fs_homepath" << home_directory.absolutePath()
 		<< "-fs_game" << game_name
 		<< "+set" << "g_gametype" << "0"
-		<< "+devmap" << context.map_name
-		<< "+wait" << "120"
-		<< "+levelshot";
+		<< "+devmap" << context.map_name;
+	if ( !use_manual_capture )
+		arguments << "+wait" << "120" << "+levelshot";
 
 	QProcess process;
 	process.setWorkingDirectory( engine_path );
@@ -755,7 +770,10 @@ static void generate_levelshot(){
 		return;
 	}
 
-	QProgressDialog progress( QString( "Starting Q3Rally and capturing %1..." ).arg( context.map_name ), "Cancel", 0, 0, main_window );
+	const QString progress_text = use_manual_capture
+		? QString( "Map %1 is loading. In Q3Rally, choose the view and run levelshot in the console; Radiant will close the game after capture." ).arg( context.map_name )
+		: QString( "Q3Rally is capturing %1 from the start position. Wait here; Radiant will close the game after capture." ).arg( context.map_name );
+	QProgressDialog progress( progress_text, "Cancel", 0, 0, main_window );
 	progress.setWindowTitle( "Generate Levelshot" );
 	progress.setWindowModality( Qt::ApplicationModal );
 	progress.setMinimumDuration( 0 );
@@ -786,7 +804,7 @@ static void generate_levelshot(){
 			loop.quit();
 			return;
 		}
-		if ( elapsed.elapsed() > 180000 ) {
+		if ( elapsed.elapsed() > ( use_manual_capture ? 600000 : 180000 ) ) {
 			timed_out = true;
 			process.kill();
 			loop.quit();
@@ -809,7 +827,9 @@ static void generate_levelshot(){
 	}
 	else {
 		QString details = QString::fromLocal8Bit( process.readAll() ).trimmed();
-		QString message = timed_out ? "Q3Rally did not produce a levelshot within three minutes." : "Q3Rally exited without producing a new valid levelshot.";
+		QString message = timed_out
+			? ( use_manual_capture ? "Q3Rally did not produce a levelshot within ten minutes." : "Q3Rally did not produce a levelshot within three minutes." )
+			: "Q3Rally exited without producing a new valid levelshot.";
 		if ( !details.isEmpty() )
 			message += QString( "\n\nEngine output:\n%1" ).arg( details.left( 1600 ) );
 		QMessageBox::warning( main_window, "Generate Levelshot", message );
@@ -2386,6 +2406,7 @@ void dispatch( const char* command, float* vMin, float* vMax, bool bSingleBrush 
 
 class TerrainGeneratorDependencies :
 	public GlobalRadiantModuleRef,
+	public GlobalFileSystemModuleRef,
 	public GlobalUndoModuleRef,
 	public GlobalSceneGraphModuleRef,
 	public GlobalSelectionModuleRef,
