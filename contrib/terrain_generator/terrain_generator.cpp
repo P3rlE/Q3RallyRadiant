@@ -33,6 +33,7 @@
 #include <QSaveFile>
 #include <QProcess>
 #include <QElapsedTimer>
+#include <QDateTime>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QDialogButtonBox>

@@ -24,8 +24,12 @@
 /// \file
 /// \brief OS file-system querying and manipulation.
 
+#include <sys/stat.h> // stat()
+
 #if defined( WIN32 )
+#ifndef S_ISDIR
 #define S_ISDIR( mode ) ( mode & _S_IFDIR )
+#endif
 #include <io.h> // _access()
 
 #ifndef F_OK
@@ -46,7 +50,6 @@
 #endif
 
 #include <cstdio> // remove()
-#include <sys/stat.h> // stat()
 #include <sys/types.h> // this is included by stat.h on win32
 #include <cstddef>
 #include <ctime>
