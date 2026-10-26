@@ -172,13 +172,21 @@ public:
 	void render( RenderStateFlags ) const override { if ( g_showRoute ) renderRoute(); }
 };
 
+class RouteDrawSolid : public OpenGLRenderable {
+public:
+	void render( RenderStateFlags ) const override { if ( g_showRoute ) renderRoute(); }
+};
+
 class RouteRenderable : public Renderable {
 	RouteDrawWireframe m_wireframe;
+	RouteDrawSolid m_solid;
 public:
 	void renderWireframe( Renderer& renderer, const VolumeTest& ) const override {
 		if ( g_showRoute ) renderer.addRenderable( m_wireframe, g_matrix4_identity );
 	}
-	void renderSolid( Renderer&, const VolumeTest& ) const override {}
+	void renderSolid( Renderer& renderer, const VolumeTest& ) const override {
+		if ( g_showRoute ) renderer.addRenderable( m_solid, g_matrix4_identity );
+	}
 };
 
 static RouteRenderable g_routeRenderable;
