@@ -1,0 +1,6 @@
+; rallyroute.def : Declares the module parameters for the DLL.
+
+LIBRARY      "RALLYROUTE"
+
+EXPORTS
+	Radiant_RegisterModules @1

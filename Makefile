@@ -451,6 +451,7 @@ binaries-radiant-plugins: \
 	$(INSTALLDIR)/plugins/sunplug.$(DLL) \
 	$(INSTALLDIR)/plugins/ufoaiplug.$(DLL) \
 	$(INSTALLDIR)/plugins/botviz.$(DLL) \
+	$(INSTALLDIR)/plugins/rallyroute.$(DLL) \
 	$(INSTALLDIR)/plugins/meshtex.$(DLL) \
 	$(INSTALLDIR)/plugins/terrain_generator.$(DLL) \
 
@@ -1199,6 +1200,11 @@ $(INSTALLDIR)/plugins/botviz.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLA
 $(INSTALLDIR)/plugins/botviz.$(DLL): \
 	contrib/botviz/botviz.o \
 	contrib/botviz/plugin.o \
+
+$(INSTALLDIR)/plugins/rallyroute.$(DLL): LIBS_EXTRA := $(LIBS_GLIB) $(LIBS_QTWIDGETS)
+$(INSTALLDIR)/plugins/rallyroute.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLAGS_QTWIDGETS) -Ilibs -Iinclude
+$(INSTALLDIR)/plugins/rallyroute.$(DLL): \
+	contrib/rallyroute/plugin.o \
 
 $(INSTALLDIR)/plugins/terrain_generator.$(DLL): LIBS_EXTRA := $(LIBS_GLIB) $(LIBS_QTWIDGETS)
 $(INSTALLDIR)/plugins/terrain_generator.$(DLL): CPPFLAGS_EXTRA := $(CPPFLAGS_GLIB) $(CPPFLAGS_QTWIDGETS) -Ilibs -Iinclude

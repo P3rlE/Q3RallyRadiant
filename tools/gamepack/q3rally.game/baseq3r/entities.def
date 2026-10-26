@@ -2541,6 +2541,9 @@ XML entity definition.
 "number"	number of the checkpoint, default is 1
 "origin"	position of the player when they respawn
 "angle"	angle of player when they respawn after death
+"bezierPos"	Bezier route anchor at this checkpoint (separate from respawn origin)
+"bezierDir"	outgoing Bezier handle offset; first control point is bezierPos + bezierDir
+		and the next checkpoint's second control point is bezierPos - bezierDir
 
 */
 
