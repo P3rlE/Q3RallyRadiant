@@ -70,6 +70,12 @@ struct Checkpoint {
 	Vec3 boundsExtents;
 };
 
+struct SprintEndpoints {
+	Vec3 start;
+	Vec3 finish;
+	bool valid = false;
+};
+
 static Vec3 add( const Vec3& a, const Vec3& b ) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }
 static Vec3 subtract( const Vec3& a, const Vec3& b ) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
 static Vec3 scale( const Vec3& a, float s ) { return { a.x * s, a.y * s, a.z * s }; }
@@ -100,10 +106,16 @@ static bool readCheckpoint( Entity* entity, Checkpoint& checkpoint ) {
 
 class CheckpointCollector : public scene::Graph::Walker {
 	std::vector<Checkpoint>& m_checkpoints;
+	std::vector<Entity*>* m_entities;
 public:
-	explicit CheckpointCollector( std::vector<Checkpoint>& checkpoints ) : m_checkpoints( checkpoints ) {}
+	CheckpointCollector( std::vector<Checkpoint>& checkpoints, std::vector<Entity*>* entities )
+		: m_checkpoints( checkpoints ), m_entities( entities ) {}
 	bool pre( const scene::Path& path, scene::Instance& instance ) const override {
 		Entity* entity = Node_getEntity( path.top() );
+		if ( entity && m_entities &&
+			std::find( m_entities->begin(), m_entities->end(), entity ) == m_entities->end() ) {
+			m_entities->push_back( entity );
+		}
 		Checkpoint checkpoint;
 		if ( readCheckpoint( entity, checkpoint ) ) {
 			checkpoint.path = path;
@@ -119,14 +131,50 @@ public:
 	}
 };
 
-static std::vector<Checkpoint> collectCheckpoints() {
+static std::vector<Checkpoint> collectCheckpoints( std::vector<Entity*>* entities = nullptr ) {
 	std::vector<Checkpoint> checkpoints;
-	CheckpointCollector collector( checkpoints );
+	CheckpointCollector collector( checkpoints, entities );
 	GlobalSceneGraph().traverse( collector );
 	std::sort( checkpoints.begin(), checkpoints.end(), []( const Checkpoint& a, const Checkpoint& b ) {
 		return a.number < b.number;
 	} );
 	return checkpoints;
+}
+
+static bool readSprintEndpoint( const std::vector<Entity*>& entities, const char* className, Vec3& position ) {
+	Entity* gate = nullptr;
+	for ( Entity* entity : entities ) {
+		if ( entity && string_equal( entity->getClassName(), className ) ) {
+			gate = entity;
+			break;
+		}
+	}
+	if ( !gate ) return false;
+
+	const char* target = gate->getKeyValue( "target" );
+	if ( target && target[0] ) {
+		for ( Entity* entity : entities ) {
+			const char* targetName = entity ? entity->getKeyValue( "targetname" ) : nullptr;
+			if ( targetName && string_equal( targetName, target ) &&
+				parseVec3( entity->getKeyValue( "origin" ), position ) ) {
+				return true;
+			}
+		}
+	}
+	return parseVec3( gate->getKeyValue( "origin" ), position );
+}
+
+static SprintEndpoints collectSprintEndpoints( const std::vector<Entity*>& entities ) {
+	SprintEndpoints endpoints;
+	endpoints.valid = readSprintEndpoint( entities, "rally_start", endpoints.start ) &&
+		readSprintEndpoint( entities, "rally_finish", endpoints.finish );
+	return endpoints;
+}
+
+static SprintEndpoints collectSprintEndpoints() {
+	std::vector<Entity*> entities;
+	collectCheckpoints( &entities );
+	return collectSprintEndpoints( entities );
 }
 
 static void bezierPoint( const Checkpoint& start, const Checkpoint& end, float t, Vec3& point ) {
@@ -138,23 +186,42 @@ static void bezierPoint( const Checkpoint& start, const Checkpoint& end, float t
 		add( scale( p2, 3.f * t * t * oneMinusT ), scale( end.anchor, t * t * t ) ) );
 }
 
+static void renderRouteSegment( const Checkpoint& start, const Checkpoint& end ) {
+	if ( !start.hasAnchor || !end.hasAnchor ) return;
+	gl().glBegin( GL_LINE_STRIP );
+	for ( int sample = 0; sample <= 32; ++sample ) {
+		Vec3 point;
+		bezierPoint( start, end, sample / 32.f, point );
+		gl().glVertex3f( point.x, point.y, point.z );
+	}
+	gl().glEnd();
+}
+
 static void renderRoute() {
-	const std::vector<Checkpoint> checkpoints = collectCheckpoints();
-	if ( checkpoints.size() < 2 ) return;
+	std::vector<Entity*> entities;
+	const std::vector<Checkpoint> checkpoints = collectCheckpoints( &entities );
+	if ( checkpoints.empty() ) return;
+	const SprintEndpoints endpoints = collectSprintEndpoints( entities );
+	if ( checkpoints.size() < 2 && !endpoints.valid ) return;
 
 	gl().glLineWidth( 3.f );
 	gl().glColor3f( 0.1f, 0.95f, 0.55f );
-	for ( std::size_t i = 0; i < checkpoints.size(); ++i ) {
-		const Checkpoint& start = checkpoints[i];
-		const Checkpoint& end = checkpoints[( i + 1 ) % checkpoints.size()];
-		if ( !start.hasAnchor || !end.hasAnchor ) continue;
-		gl().glBegin( GL_LINE_STRIP );
-		for ( int sample = 0; sample <= 32; ++sample ) {
-			Vec3 point;
-			bezierPoint( start, end, sample / 32.f, point );
-			gl().glVertex3f( point.x, point.y, point.z );
-		}
-		gl().glEnd();
+	if ( endpoints.valid ) {
+		Checkpoint start;
+		start.anchor = endpoints.start;
+		start.handle = scale( subtract( checkpoints.front().anchor, endpoints.start ), 1.f / 3.f );
+		start.hasAnchor = true;
+		Checkpoint finish;
+		finish.anchor = endpoints.finish;
+		finish.handle = scale( subtract( endpoints.finish, checkpoints.back().anchor ), 1.f / 3.f );
+		finish.hasAnchor = true;
+		renderRouteSegment( start, checkpoints.front() );
+		for ( std::size_t i = 0; i + 1 < checkpoints.size(); ++i )
+			renderRouteSegment( checkpoints[i], checkpoints[i + 1] );
+		renderRouteSegment( checkpoints.back(), finish );
+	} else {
+		for ( std::size_t i = 0; i < checkpoints.size(); ++i )
+			renderRouteSegment( checkpoints[i], checkpoints[( i + 1 ) % checkpoints.size()] );
 	}
 
 	gl().glLineWidth( 1.5f );
@@ -184,6 +251,12 @@ static void renderRoute() {
 			gl().glColor3f( 1.f, 0.65f, 0.1f );
 			gl().glVertex3f( control.x, control.y, control.z );
 		}
+	}
+	if ( endpoints.valid ) {
+		gl().glColor3f( 1.f, 0.25f, 0.25f );
+		gl().glVertex3f( endpoints.start.x, endpoints.start.y, endpoints.start.z );
+		gl().glColor3f( 0.25f, 0.65f, 1.f );
+		gl().glVertex3f( endpoints.finish.x, endpoints.finish.y, endpoints.finish.z );
 	}
 	gl().glEnd();
 }
@@ -262,20 +335,49 @@ static float wrapDegrees( float value ) {
 }
 
 static bool checkpointTangentYaw( const std::vector<Checkpoint>& checkpoints, Entity* entity, float& yaw ) {
-	if ( checkpoints.size() < 2 ) return false;
+	if ( checkpoints.empty() ) return false;
 	std::size_t index = checkpoints.size();
 	for ( std::size_t i = 0; i < checkpoints.size(); ++i ) {
 		if ( checkpoints[i].entity == entity ) { index = i; break; }
 	}
 	if ( index == checkpoints.size() ) return false;
-	const std::size_t previous = ( index + checkpoints.size() - 1 ) % checkpoints.size();
-	const std::size_t next = ( index + 1 ) % checkpoints.size();
-	if ( !checkpoints[previous].hasAnchor || !checkpoints[next].hasAnchor ) return false;
-	Vec3 tangent = subtract( checkpoints[next].anchor, checkpoints[previous].anchor );
+	if ( !checkpoints[index].hasAnchor ) return false;
+	const SprintEndpoints endpoints = collectSprintEndpoints();
+	Vec3 tangent;
+	if ( endpoints.valid ) {
+		if ( checkpoints.size() == 1 ) {
+			tangent = subtract( endpoints.finish, endpoints.start );
+		} else if ( index == 0 ) {
+			if ( !checkpoints[1].hasAnchor ) return false;
+			tangent = subtract( checkpoints[1].anchor, endpoints.start );
+		} else if ( index + 1 == checkpoints.size() ) {
+			if ( !checkpoints[index - 1].hasAnchor ) return false;
+			tangent = subtract( endpoints.finish, checkpoints[index - 1].anchor );
+		} else {
+			if ( !checkpoints[index - 1].hasAnchor || !checkpoints[index + 1].hasAnchor ) return false;
+			tangent = subtract( checkpoints[index + 1].anchor, checkpoints[index - 1].anchor );
+		}
+	} else {
+		if ( checkpoints.size() < 2 ) return false;
+		const std::size_t previous = ( index + checkpoints.size() - 1 ) % checkpoints.size();
+		const std::size_t next = ( index + 1 ) % checkpoints.size();
+		if ( !checkpoints[previous].hasAnchor || !checkpoints[next].hasAnchor ) return false;
+		tangent = subtract( checkpoints[next].anchor, checkpoints[previous].anchor );
+	}
 	float length = sqrtf( tangent.x * tangent.x + tangent.y * tangent.y );
 	if ( length < 0.001f ) {
 		if ( !checkpoints[index].hasAnchor ) return false;
-		tangent = subtract( checkpoints[next].anchor, checkpoints[index].anchor );
+		if ( endpoints.valid && index == 0 && checkpoints.size() > 1 )
+			tangent = subtract( checkpoints[1].anchor, checkpoints[index].anchor );
+		else if ( endpoints.valid && index + 1 == checkpoints.size() && checkpoints.size() > 1 )
+			tangent = subtract( endpoints.finish, checkpoints[index].anchor );
+		else if ( endpoints.valid )
+			tangent = subtract( endpoints.finish, endpoints.start );
+		else if ( !endpoints.valid ) {
+			const std::size_t next = ( index + 1 ) % checkpoints.size();
+			if ( !checkpoints[next].hasAnchor ) return false;
+			tangent = subtract( checkpoints[next].anchor, checkpoints[index].anchor );
+		}
 		length = sqrtf( tangent.x * tangent.x + tangent.y * tangent.y );
 	}
 	if ( length < 0.001f ) return false;
