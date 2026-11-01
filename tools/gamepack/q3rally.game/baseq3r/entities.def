@@ -2741,7 +2741,7 @@ music : path/name of looping .wav file used for level's music (eg. music/sonic5.
 scoreboardmusic : path/name of looping .wav file used for level's scoreboard music (eg. music/win.wav).
 _ambient OR ambient : Adds a constant value to overall lighting. Use is not recommended. Ambient light will have a tendency to flatten out variations in light and shade.
 _color : RGB value for ambient light color (default is 0 0 0).
-gravity : gravity of level (default is normal gravity: 800).
+gravity : gravity of level (Q3Rally runtime default: 1400).
 gridsize : granularity of the lightgrid created by q3map. Value is three integers separated by spaces, representing number of units between grid points in X Y Z. Default gridsize value is 128 128 256. Use larger powers of 2 to reduce BSP size and compile time on very large maps.
 _blocksize : q3map always splits the BSP tree along the planes X=_blocksize*n and Y=_blocksize*n. Default _blocksize value is 1024. Increase the blocksize using larger powers of 2 to reduce compile times on very large maps with a low structural brush density.
 -------- Q3MAP2 KEYS --------

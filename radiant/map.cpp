@@ -67,6 +67,7 @@
 #include "brushmodule.h"
 #include "brush.h"
 #include "grid.h"
+#include "q3rally_mapsettings.h"
 
 class NameObserver
 {
@@ -1811,11 +1812,48 @@ void Scene_parentSelected(){
 #endif
 
 
+static bool Q3Rally_MapSettingsEnabled(){
+    return string_equal(GlobalRadiant().getRequiredGameDescriptionKeyValue("basegame"), "baseq3r");
+}
+
+static void Q3Rally_ApplyMapSettings(const Q3RallyMapValues &values){
+    Entity *entity = Node_getEntity(Map_FindOrInsertWorldspawn(g_map));
+    const Q3RallyMapValues previous = Q3Rally_ReadWorldspawn(entity);
+    for (auto it = previous.cbegin(); it != previous.cend(); ++it)
+        if (!values.contains(it.key())) entity->setKeyValue(it.key().toUtf8().constData(), "");
+    for (auto it = values.cbegin(); it != values.cend(); ++it)
+        if (previous.value(it.key()) != it.value() || !previous.contains(it.key()))
+            entity->setKeyValue(it.key().toUtf8().constData(), it.value().toUtf8().constData());
+    SceneChangeNotify();
+}
+
+static void Q3Rally_MapSettings(){
+    if (!Map_Valid(g_map)) return;
+    if (!Q3Rally_MapSettingsEnabled()) {
+        QMessageBox::information(MainFrame_getWindow(), "Map Settings", "These settings are available with the Q3Rally gamepack.");
+        return;
+    }
+    scene::Node *node = Map_FindWorldspawn(g_map);
+    Entity *entity = node ? Node_getEntity(*node) : nullptr;
+    Q3RallyMapValues values;
+    if (Q3Rally_EditMapSettings(MainFrame_getWindow(), entity, false, values) && values != Q3Rally_ReadWorldspawn(entity)) {
+        UndoableCommand undo("Q3Rally Map Settings");
+        Q3Rally_ApplyMapSettings(values);
+    }
+}
+
 void NewMap(){
-	if ( ConfirmModified( "New Map" ) ) {
-		Map_Free();
-		Map_New();
-	}
+    if (!ConfirmModified("New Map")) return;
+    const bool setup = Q3Rally_MapSettingsEnabled();
+    Q3RallyMapValues values;
+    // Collect settings before Map_Free: Cancel must retain the open map.
+    if (setup && !Q3Rally_EditMapSettings(MainFrame_getWindow(), nullptr, true, values)) return;
+    Map_Free();
+    Map_New();
+    if (setup) {
+        UndoableCommand undo("New Q3Rally map settings");
+        Q3Rally_ApplyMapSettings(values);
+    }
 }
 
 CopiedString g_mapsPath;
@@ -2428,6 +2466,7 @@ bool g_bLoadLastMap = true;
 
 void Map_Construct(){
 	GlobalCommands_insert( "NewMap", makeCallbackF( NewMap ) );
+    GlobalCommands_insert("MapSettings", makeCallbackF(Q3Rally_MapSettings));
 	GlobalCommands_insert( "OpenMap", makeCallbackF( OpenMap ), QKeySequence( "Ctrl+O" ) );
 	GlobalCommands_insert( "ImportMap", makeCallbackF( ImportMap ) );
 	GlobalCommands_insert( "SaveMap", makeCallbackF( SaveMap ), QKeySequence( "Ctrl+S" ) );

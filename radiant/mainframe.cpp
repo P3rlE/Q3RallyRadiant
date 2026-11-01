@@ -916,6 +916,7 @@ void create_file_menu( QMenuBar *menubar ){
 	menu->setTearOffEnabled( g_Layout_enableDetachableMenus.m_value );
 
 	create_menu_item_with_mnemonic( menu, "&New Map", "NewMap" );
+    create_menu_item_with_mnemonic(menu, "Map &Settings...", "MapSettings");
 	menu->addSeparator();
 
 	create_menu_item_with_mnemonic( menu, "&Open...", "OpenMap" );
