@@ -567,6 +567,7 @@ targetname : NOT SUPPORTED BY RENDERER - if set, a func_button or trigger can ma
 notfree : when set to 1, entity will not spawn in "Free for all" and "Tournament" modes.
 notteam : when set to 1, entity will not spawn in "Teamplay" and "CTF" modes.
 notsingle : when set to 1, entity will not spawn in Single Player mode.
+onlyTrackLength : track lengths this entity exists for: 0 short, 1 medium, 2 long, combinations like 12 (default 012). Use for barriers that differ between track lengths.
 -------- Q3MAP2 KEYS --------
 _targetname : Used to attach a misc_model entity to this entity.
 _lightmapscale : Floating point value scaling the resolution of lightmaps on brushes/patches in this entity (default 1.0).
@@ -2531,6 +2532,7 @@ XML entity definition.
 /*QUAKED rally_startfinish (0 .9 .1) ?
 
 "laps"	number of laps, default is 1
+"onlyTrackLength"	track lengths this entity exists for (0 short, 1 medium, 2 long), default 012
 "origin"	position of the player when they respawn
 "angle"	angle of player when they respawn after death
 
@@ -2544,6 +2546,10 @@ XML entity definition.
 "bezierPos"	Bezier route anchor at this checkpoint (separate from respawn origin)
 "bezierDir"	outgoing Bezier handle offset; first control point is bezierPos + bezierDir
 		and the next checkpoint's second control point is bezierPos - bezierDir
+"onlyTrackLength"	track lengths this checkpoint exists for: 0 short, 1 medium, 2 long,
+		combinations like 12; default 012 (all). Numbers must run 1..N for every length.
+		Restricting a checkpoint gives each length its own BPD file, maps/<map>_tl<n>.bpd;
+		the shipped .bpd files are the reference route, bezierPos/bezierDir their editor copy.
 
 */
 

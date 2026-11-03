@@ -1,6 +1,10 @@
 /*
 ** RallyRoute plugin for Q3Rally Radiant.
 ** Visualizes and edits checkpoint Bezier routes stored on rally_checkpoint entities.
+**
+** The BPD files next to the .map are the reference route that ships with the game.
+** Maps whose checkpoints differ between track lengths (onlyTrackLength) keep one
+** file per length, <map>_tl<n>.bpd; the plugin always works on one track length.
 */
 
 #include "debugging/debugging.h"
@@ -27,6 +31,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QSlider>
@@ -46,6 +51,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <limits>
@@ -90,6 +96,29 @@ static bool parseVec3( const char* text, Vec3& value ) {
 	return true;
 }
 
+/* Track lengths as in g_trackLength: 0 short, 1 medium, 2 long. */
+static const int k_trackLengthCount = 3;
+static const char* const k_trackLengthNames[k_trackLengthCount] = { "Short", "Medium", "Long" };
+static int g_trackLength = 0;
+
+/* Same rule as the game's spawn filter: a missing key means all lengths. */
+static const char* onlyTrackLengthOf( const Entity* entity ) {
+	if ( !entity ) return "012";
+	if ( entity->hasKeyValue( "onlyTrackLength" ) ) return entity->getKeyValue( "onlyTrackLength" );
+	if ( entity->hasKeyValue( "onlytracklength" ) ) return entity->getKeyValue( "onlytracklength" );
+	return "012";
+}
+
+static bool entityInTrackLength( const Entity* entity, int trackLength ) {
+	if ( trackLength < 0 ) return true;
+	return strchr( onlyTrackLengthOf( entity ), '0' + trackLength ) != nullptr;
+}
+
+static bool isLengthRestricted( const Entity* entity ) {
+	const char* value = onlyTrackLengthOf( entity );
+	return !strchr( value, '0' ) || !strchr( value, '1' ) || !strchr( value, '2' );
+}
+
 static bool readCheckpoint( Entity* entity, Checkpoint& checkpoint ) {
 	if ( !entity || !string_equal( entity->getClassName(), "rally_checkpoint" ) ) return false;
 	const char* number = entity->getKeyValue( "number" );
@@ -107,9 +136,10 @@ static bool readCheckpoint( Entity* entity, Checkpoint& checkpoint ) {
 class CheckpointCollector : public scene::Graph::Walker {
 	std::vector<Checkpoint>& m_checkpoints;
 	std::vector<Entity*>* m_entities;
+	int m_trackLength;
 public:
-	CheckpointCollector( std::vector<Checkpoint>& checkpoints, std::vector<Entity*>* entities )
-		: m_checkpoints( checkpoints ), m_entities( entities ) {}
+	CheckpointCollector( std::vector<Checkpoint>& checkpoints, std::vector<Entity*>* entities, int trackLength )
+		: m_checkpoints( checkpoints ), m_entities( entities ), m_trackLength( trackLength ) {}
 	bool pre( const scene::Path& path, scene::Instance& instance ) const override {
 		Entity* entity = Node_getEntity( path.top() );
 		if ( entity && m_entities &&
@@ -117,7 +147,7 @@ public:
 			m_entities->push_back( entity );
 		}
 		Checkpoint checkpoint;
-		if ( readCheckpoint( entity, checkpoint ) ) {
+		if ( readCheckpoint( entity, checkpoint ) && entityInTrackLength( entity, m_trackLength ) ) {
 			checkpoint.path = path;
 			const AABB& bounds = instance.worldAABB();
 			checkpoint.hasBounds = aabb_valid( bounds );
@@ -131,9 +161,10 @@ public:
 	}
 };
 
-static std::vector<Checkpoint> collectCheckpoints( std::vector<Entity*>* entities = nullptr ) {
+/* Checkpoints of one track length (-1: all checkpoints of the map). */
+static std::vector<Checkpoint> collectCheckpointsForLength( int trackLength, std::vector<Entity*>* entities = nullptr ) {
 	std::vector<Checkpoint> checkpoints;
-	CheckpointCollector collector( checkpoints, entities );
+	CheckpointCollector collector( checkpoints, entities, trackLength );
 	GlobalSceneGraph().traverse( collector );
 	std::sort( checkpoints.begin(), checkpoints.end(), []( const Checkpoint& a, const Checkpoint& b ) {
 		return a.number < b.number;
@@ -141,10 +172,51 @@ static std::vector<Checkpoint> collectCheckpoints( std::vector<Entity*>* entitie
 	return checkpoints;
 }
 
+/* Checkpoints of the track length the plugin is working on. */
+static std::vector<Checkpoint> collectCheckpoints( std::vector<Entity*>* entities = nullptr ) {
+	return collectCheckpointsForLength( g_trackLength, entities );
+}
+
+struct MapTrackInfo {
+	bool allowed[k_trackLengthCount] = { true, true, true };
+	bool hasVariants = false;	// a rally_checkpoint exists only for some lengths
+};
+
+static MapTrackInfo collectMapTrackInfo() {
+	static const char* const allowKeys[k_trackLengthCount] = { "allowShortTrack", "allowMediumTrack", "allowLongTrack" };
+	MapTrackInfo info;
+	std::vector<Entity*> entities;
+	const std::vector<Checkpoint> checkpoints = collectCheckpointsForLength( -1, &entities );
+	for ( Entity* entity : entities ) {
+		if ( !entity || !string_equal( entity->getClassName(), "worldspawn" ) ) continue;
+		for ( int i = 0; i < k_trackLengthCount; ++i ) {
+			if ( entity->hasKeyValue( allowKeys[i] ) ) info.allowed[i] = atoi( entity->getKeyValue( allowKeys[i] ) ) != 0;
+		}
+	}
+	for ( const Checkpoint& checkpoint : checkpoints ) {
+		if ( isLengthRestricted( checkpoint.entity ) ) info.hasVariants = true;
+	}
+	return info;
+}
+
+static int firstAllowedTrackLength( const MapTrackInfo& info ) {
+	for ( int i = 0; i < k_trackLengthCount; ++i ) {
+		if ( info.allowed[i] && !collectCheckpointsForLength( i ).empty() ) return i;
+	}
+	for ( int i = 0; i < k_trackLengthCount; ++i ) {
+		if ( info.allowed[i] ) return i;
+	}
+	return 0;
+}
+
+static QString trackLengthLabel( int trackLength ) {
+	return QString( "%1 track" ).arg( k_trackLengthNames[trackLength] );
+}
+
 static bool readSprintEndpoint( const std::vector<Entity*>& entities, const char* className, Vec3& position ) {
 	Entity* gate = nullptr;
 	for ( Entity* entity : entities ) {
-		if ( entity && string_equal( entity->getClassName(), className ) ) {
+		if ( entity && string_equal( entity->getClassName(), className ) && entityInTrackLength( entity, g_trackLength ) ) {
 			gate = entity;
 			break;
 		}
@@ -385,7 +457,10 @@ static bool checkpointTangentYaw( const std::vector<Checkpoint>& checkpoints, En
 	return true;
 }
 
+static bool switchTrackLength( int trackLength );
+
 class RouteEditorDialog : public QDialog {
+	QComboBox* m_trackLengthCombo = nullptr;
 	QLabel* m_selectionLabel = nullptr;
 	QLabel* m_tangentLabel = nullptr;
 	QPushButton* m_previousButton = nullptr;
@@ -402,12 +477,20 @@ class RouteEditorDialog : public QDialog {
 	bool m_loading = false;
 	bool m_curveDirty = false;
 	Entity* m_boundEntity = nullptr;
+	Entity* m_lastSelection = nullptr;
 	std::unique_ptr<UndoableCommand> m_editUndo;
 public:
 	explicit RouteEditorDialog( QWidget* parent ) : QDialog( parent, Qt::Tool ) {
 		setWindowTitle( "RallyRoute — Bezier point and curve" );
 		setMinimumWidth( 440 );
 		auto* layout = new QVBoxLayout( this );
+		auto* trackLengthRow = new QHBoxLayout;
+		trackLengthRow->addWidget( new QLabel( "Track length" ) );
+		m_trackLengthCombo = new QComboBox;
+		for ( int i = 0; i < k_trackLengthCount; ++i ) m_trackLengthCombo->addItem( k_trackLengthNames[i] );
+		m_trackLengthCombo->setToolTip( "Checkpoints, preview, import and export follow this track length (onlyTrackLength)." );
+		trackLengthRow->addWidget( m_trackLengthCombo, 1 );
+		layout->addLayout( trackLengthRow );
 		m_selectionLabel = new QLabel( "Select one rally_checkpoint in the map." );
 		layout->addWidget( m_selectionLabel );
 		auto* navigation = new QHBoxLayout;
@@ -558,15 +641,33 @@ public:
 			storeCurrent();
 		} );
 		connect( m_tilt, &QDoubleSpinBox::editingFinished, this, [this]() { endSpinEdit(); } );
+		connect( m_trackLengthCombo, QOverload<int>::of( &QComboBox::currentIndexChanged ), this, [this]( int index ) {
+			if ( m_loading ) return;
+			if ( !switchTrackLength( index ) ) refreshTrackLength();
+		} );
 		connect( m_previousButton, &QPushButton::clicked, this, [this]() { navigateCheckpoint( -1 ); } );
 		connect( m_nextButton, &QPushButton::clicked, this, [this]() { navigateCheckpoint( 1 ); } );
-		updateFromSelection();
+		refreshTrackLength();
 		auto* selectionTimer = new QTimer( this );
 		selectionTimer->setInterval( 100 );
 		connect( selectionTimer, &QTimer::timeout, this, [this]() {
-			if ( isVisible() && selectedCheckpoint() != m_boundEntity ) updateFromSelection();
+			if ( isVisible() && selectedCheckpoint() != m_lastSelection ) updateFromSelection();
 		} );
 		selectionTimer->start();
+	}
+
+	/* Shows the plugin's current track length and reloads the selected checkpoint. */
+	void refreshTrackLength() {
+		const MapTrackInfo info = collectMapTrackInfo();
+		{
+			QSignalBlocker blocker( m_trackLengthCombo );
+			for ( int i = 0; i < k_trackLengthCount; ++i ) {
+				m_trackLengthCombo->setItemText( i, info.allowed[i] ? QString( k_trackLengthNames[i] )
+					: QString( "%1 (not enabled in worldspawn)" ).arg( k_trackLengthNames[i] ) );
+			}
+			m_trackLengthCombo->setCurrentIndex( g_trackLength );
+		}
+		updateFromSelection();
 	}
 
 	void updateFromSelection() {
@@ -574,11 +675,14 @@ public:
 		m_loading = true;
 		m_curveDirty = false;
 		m_boundEntity = selectedCheckpoint();
+		m_lastSelection = m_boundEntity;
 		Checkpoint checkpoint;
 		Entity* entity = findCheckpoint( m_boundEntity, checkpoint ) ? m_boundEntity : nullptr;
 		if ( !entity ) {
+			m_selectionLabel->setText( m_boundEntity
+				? QString( "This checkpoint is not part of the %1." ).arg( trackLengthLabel( g_trackLength ) )
+				: QString( "Select exactly one rally_checkpoint in the map." ) );
 			m_boundEntity = nullptr;
-			m_selectionLabel->setText( "Select exactly one rally_checkpoint in the map." );
 			for ( auto* value : m_position ) value->setEnabled( false );
 			m_previousButton->setEnabled( false );
 			m_nextButton->setEnabled( false );
@@ -697,20 +801,12 @@ private:
 
 static RouteEditorDialog* g_editor = nullptr;
 
-static void updateEditorFromSelection( const Selectable& ) {
-	if ( g_editor && g_editor->isVisible() ) g_editor->updateFromSelection();
+static void refreshEditor() {
+	if ( g_editor ) g_editor->refreshTrackLength();
 }
 
-static void showRouteStatus() {
-	const std::vector<Checkpoint> checkpoints = collectCheckpoints();
-	int anchors = 0, handles = 0;
-	for ( const Checkpoint& checkpoint : checkpoints ) {
-		if ( checkpoint.hasAnchor ) ++anchors;
-		if ( checkpoint.hasHandle ) ++handles;
-	}
-	const QString text = QString( "Checkpoints: %1\nBezier anchors: %2/%1\nHandle vectors: %3/%1\n\nThe route preview uses bezierPos/bezierDir exactly as Q3Rally does. Missing anchors are skipped; missing handles act as zero offsets. Respawn origin is never used as a route point." )
-		.arg( checkpoints.size() ).arg( anchors ).arg( handles );
-	GlobalRadiant().m_pfnMessageBox( g_mainWindow, text.toLocal8Bit().constData(), "RallyRoute", EMessageBoxType::Info, 0 );
+static void updateEditorFromSelection( const Selectable& ) {
+	if ( g_editor && g_editor->isVisible() ) g_editor->updateFromSelection();
 }
 
 static QString bpdDirectory() {
@@ -718,50 +814,64 @@ static QString bpdDirectory() {
 	return QDir( directory ).exists() ? directory : QDir::homePath();
 }
 
-static void exportBpd() {
-	const std::vector<Checkpoint> checkpoints = collectCheckpoints();
-	if ( checkpoints.empty() ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, "No rally_checkpoint entities found in the map.", "RallyRoute", EMessageBoxType::Warning, 0 );
-		return;
-	}
-	for ( const Checkpoint& checkpoint : checkpoints ) {
-		if ( !checkpoint.hasAnchor ) {
-			const QString error = QString( "Checkpoint %1 has no valid bezierPos. BPD export stopped." ).arg( checkpoint.number );
-			GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute", EMessageBoxType::Warning, 0 );
-			return;
-		}
-	}
-	const QString path = QFileDialog::getSaveFileName( g_mainWindow, "Export Q3Rally Bezier path", bpdDirectory(), "Bezier paths (*.bpd);;All files (*)" );
-	if ( path.isEmpty() ) return;
-	QFile file( path );
-	if ( !file.open( QIODevice::WriteOnly | QIODevice::Text ) ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, "Could not open the selected BPD file for writing.", "RallyRoute", EMessageBoxType::Error, 0 );
-		return;
-	}
-	QTextStream stream( &file );
-	stream.setRealNumberNotation( QTextStream::FixedNotation );
-	stream.setRealNumberPrecision( 3 );
-	for ( const Checkpoint& checkpoint : checkpoints ) {
-		const Vec3 handle = checkpoint.hasHandle ? checkpoint.handle : Vec3{};
-		stream << checkpoint.number << " : "
-			<< checkpoint.anchor.x << " " << checkpoint.anchor.y << " " << checkpoint.anchor.z << " : "
-			<< handle.x << " " << handle.y << " " << handle.z << "\n";
-	}
-	file.close();
+static QString gameMapsDirectory() {
+	return QDir( QDir::homePath() ).filePath( "AppData/Roaming/Q3Rally/baseq3r/maps" );
 }
 
-static void importBpd() {
-	const QString path = QFileDialog::getOpenFileName( g_mainWindow, "Import Q3Rally Bezier path", bpdDirectory(), "Bezier paths (*.bpd);;All files (*)" );
-	if ( path.isEmpty() ) return;
+static void showMessage( const QString& text, EMessageBoxType type, const char* caption = "RallyRoute" ) {
+	GlobalRadiant().m_pfnMessageBox( g_mainWindow, text.toLocal8Bit().constData(), caption, type, 0 );
+}
+
+static QString currentMapPath() {
+	const char* mapNameText = GlobalRadiant().getMapName ? GlobalRadiant().getMapName() : nullptr;
+	return mapNameText ? QString::fromLocal8Bit( mapNameText ) : QString();
+}
+
+static QString currentMapBaseName() {
+	const QString baseName = QFileInfo( currentMapPath() ).completeBaseName();
+	if ( baseName.isEmpty() || baseName.compare( "unnamed", Qt::CaseInsensitive ) == 0 ) return QString();
+	return baseName;
+}
+
+/* The reference BPD files live next to the .map, in the maps folder that ships with the game. */
+static QString bpdFolder() {
+	const QFileInfo mapFile( currentMapPath() );
+	if ( !currentMapBaseName().isEmpty() && mapFile.isAbsolute() && mapFile.absoluteDir().exists() )
+		return mapFile.absolutePath();
+	return QString();
+}
+
+static bool lengthFilesExist( const QString& folder, const QString& baseName ) {
+	for ( int i = 0; i < k_trackLengthCount; ++i ) {
+		if ( QFileInfo::exists( QDir( folder ).filePath( QString( "%1_tl%2.bpd" ).arg( baseName ).arg( i ) ) ) ) return true;
+	}
+	return false;
+}
+
+/* Same file names the game loads: <map>_tl<n>.bpd on maps with length variants,
+   otherwise <map>.bpd (unless the map already uses per-length files). */
+static QString trackLengthBpdPath( const MapTrackInfo& info, int trackLength ) {
+	const QString folder = bpdFolder();
+	const QString baseName = currentMapBaseName();
+	if ( folder.isEmpty() || baseName.isEmpty() ) return QString();
+	if ( info.hasVariants || lengthFilesExist( folder, baseName ) )
+		return QDir( folder ).filePath( QString( "%1_tl%2.bpd" ).arg( baseName ).arg( trackLength ) );
+	return QDir( folder ).filePath( baseName + ".bpd" );
+}
+
+struct BpdRecord {
+	int number = 0;
+	Vec3 anchor;
+	Vec3 handle;
+};
+
+static bool readBpdFile( const QString& path, std::vector<BpdRecord>& records, QString& error ) {
+	records.clear();
 	QFile file( path );
 	if ( !file.open( QIODevice::ReadOnly | QIODevice::Text ) ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, "Could not open the selected BPD file.", "RallyRoute", EMessageBoxType::Error, 0 );
-		return;
+		error = QString( "Could not open %1." ).arg( QDir::toNativeSeparators( path ) );
+		return false;
 	}
-	std::map<int, Entity*> entities;
-	for ( const Checkpoint& checkpoint : collectCheckpoints() ) entities[checkpoint.number] = checkpoint.entity;
-	struct ImportedPoint { int number; Vec3 anchor; Vec3 handle; };
-	std::vector<ImportedPoint> imported;
 	QTextStream stream( &file );
 	int lineNumber = 0;
 	while ( !stream.atEnd() ) {
@@ -770,49 +880,282 @@ static void importBpd() {
 		const char* p = line.constData();
 		while ( *p == ' ' || *p == '\t' ) ++p;
 		if ( !*p || *p == '#' || *p == '/' ) continue;
-		ImportedPoint point{};
+		BpdRecord record;
 		char tail;
-		if ( sscanf( p, " %d : %f %f %f : %f %f %f %c", &point.number,
-			&point.anchor.x, &point.anchor.y, &point.anchor.z,
-			&point.handle.x, &point.handle.y, &point.handle.z, &tail ) < 7 ||
-			!std::isfinite( point.anchor.x ) || !std::isfinite( point.anchor.y ) || !std::isfinite( point.anchor.z ) ||
-			!std::isfinite( point.handle.x ) || !std::isfinite( point.handle.y ) || !std::isfinite( point.handle.z ) ) {
-			const QString error = QString( "Invalid BPD record on line %1." ).arg( lineNumber );
-			GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute", EMessageBoxType::Error, 0 );
-			return;
+		if ( sscanf( p, " %d : %f %f %f : %f %f %f %c", &record.number,
+			&record.anchor.x, &record.anchor.y, &record.anchor.z,
+			&record.handle.x, &record.handle.y, &record.handle.z, &tail ) < 7 ||
+			!std::isfinite( record.anchor.x ) || !std::isfinite( record.anchor.y ) || !std::isfinite( record.anchor.z ) ||
+			!std::isfinite( record.handle.x ) || !std::isfinite( record.handle.y ) || !std::isfinite( record.handle.z ) ) {
+			error = QString( "Invalid BPD record on line %1." ).arg( lineNumber );
+			return false;
 		}
-		if ( entities.find( point.number ) == entities.end() ) {
-			const QString error = QString( "BPD checkpoint %1 has no matching rally_checkpoint in this map." ).arg( point.number );
-			GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute", EMessageBoxType::Error, 0 );
-			return;
+		if ( std::any_of( records.begin(), records.end(), [&record]( const BpdRecord& other ) { return other.number == record.number; } ) ) {
+			error = QString( "BPD checkpoint %1 occurs more than once." ).arg( record.number );
+			return false;
 		}
-		if ( std::any_of( imported.begin(), imported.end(), [&point]( const ImportedPoint& other ) { return other.number == point.number; } ) ) {
-			const QString error = QString( "BPD checkpoint %1 occurs more than once." ).arg( point.number );
-			GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute", EMessageBoxType::Error, 0 );
-			return;
+		records.push_back( record );
+	}
+	if ( records.empty() ) {
+		error = "The BPD file contains no checkpoint records.";
+		return false;
+	}
+	return true;
+}
+
+/* Checkpoint numbers of one track length must run 1..N without gaps or duplicates. */
+static bool checkCheckpointNumbers( const std::vector<Checkpoint>& checkpoints, QString& problem ) {
+	QStringList duplicates, missing;
+	std::map<int, int> counts;
+	int highest = 0;
+	for ( const Checkpoint& checkpoint : checkpoints ) {
+		++counts[checkpoint.number];
+		highest = std::max( highest, checkpoint.number );
+	}
+	for ( const auto& count : counts ) {
+		if ( count.second > 1 ) duplicates << QString::number( count.first );
+	}
+	for ( int number = 1; number <= highest; ++number ) {
+		if ( counts.find( number ) == counts.end() ) missing << QString::number( number );
+	}
+	if ( duplicates.isEmpty() && missing.isEmpty() && counts.find( 0 ) == counts.end() ) return true;
+	QStringList parts;
+	if ( !duplicates.isEmpty() ) parts << QString( "duplicate %1" ).arg( duplicates.join( ", " ) );
+	if ( !missing.isEmpty() ) parts << QString( "missing %1" ).arg( missing.join( ", " ) );
+	if ( counts.find( 0 ) != counts.end() ) parts << "number 0 is invalid";
+	problem = parts.join( "; " );
+	return false;
+}
+
+static bool checkExportable( const std::vector<Checkpoint>& checkpoints, QString& error ) {
+	if ( checkpoints.empty() ) {
+		error = QString( "No rally_checkpoint entities on the %1." ).arg( trackLengthLabel( g_trackLength ) );
+		return false;
+	}
+	QString problem;
+	if ( !checkCheckpointNumbers( checkpoints, problem ) ) {
+		error = QString( "Checkpoint numbers on the %1 are not 1..N (%2). BPD export stopped." )
+			.arg( trackLengthLabel( g_trackLength ), problem );
+		return false;
+	}
+	for ( const Checkpoint& checkpoint : checkpoints ) {
+		if ( !checkpoint.hasAnchor ) {
+			error = QString( "Checkpoint %1 has no valid bezierPos. BPD export stopped." ).arg( checkpoint.number );
+			return false;
 		}
-		imported.push_back( point );
+	}
+	return true;
+}
+
+static bool writeBpdFile( const QString& path, const std::vector<Checkpoint>& checkpoints, QString& error ) {
+	QFile file( path );
+	if ( !file.open( QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text ) ) {
+		error = QString( "Could not open %1 for writing." ).arg( QDir::toNativeSeparators( path ) );
+		return false;
+	}
+	QTextStream stream( &file );
+	stream.setLocale( QLocale::c() );
+	stream.setRealNumberNotation( QTextStream::FixedNotation );
+	stream.setRealNumberPrecision( 3 );
+	for ( const Checkpoint& checkpoint : checkpoints ) {
+		const Vec3 handle = checkpoint.hasHandle ? checkpoint.handle : Vec3{};
+		stream << checkpoint.number << " : "
+			<< checkpoint.anchor.x << " " << checkpoint.anchor.y << " " << checkpoint.anchor.z << " : "
+			<< handle.x << " " << handle.y << " " << handle.z << "\n";
+	}
+	stream.flush();
+	if ( stream.status() != QTextStream::Ok ) {
+		error = QString( "Could not write all checkpoint records to %1." ).arg( QDir::toNativeSeparators( path ) );
+		return false;
 	}
 	file.close();
-	if ( imported.empty() ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, "The BPD file contains no checkpoint records.", "RallyRoute", EMessageBoxType::Warning, 0 );
-		return;
+	return true;
+}
+
+static bool sameVector( const Vec3& a, const Vec3& b ) {
+	return std::fabs( a.x - b.x ) < 0.01f && std::fabs( a.y - b.y ) < 0.01f && std::fabs( a.z - b.z ) < 0.01f;
+}
+
+static bool recordsMatchCheckpoints( const std::vector<Checkpoint>& checkpoints, const std::vector<BpdRecord>& records ) {
+	if ( checkpoints.size() != records.size() ) return false;
+	for ( const Checkpoint& checkpoint : checkpoints ) {
+		const auto record = std::find_if( records.begin(), records.end(), [&checkpoint]( const BpdRecord& candidate ) {
+			return candidate.number == checkpoint.number;
+		} );
+		if ( record == records.end() || !checkpoint.hasAnchor ) return false;
+		if ( !sameVector( checkpoint.anchor, record->anchor ) ) return false;
+		if ( !sameVector( checkpoint.hasHandle ? checkpoint.handle : Vec3{}, record->handle ) ) return false;
 	}
-	if ( imported.size() != entities.size() ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, "The BPD checkpoint count does not match this map. No values were imported.", "RallyRoute", EMessageBoxType::Error, 0 );
-		return;
+	return true;
+}
+
+/* Writes the records into the checkpoints of the current track length as one undo step. */
+static bool applyBpdRecords( const std::vector<Checkpoint>& checkpoints, const std::vector<BpdRecord>& records,
+	const char* undoName, QString& error ) {
+	std::map<int, Entity*> entities;
+	for ( const Checkpoint& checkpoint : checkpoints ) entities[checkpoint.number] = checkpoint.entity;
+	for ( const BpdRecord& record : records ) {
+		if ( entities.find( record.number ) == entities.end() ) {
+			error = QString( "BPD checkpoint %1 has no matching rally_checkpoint on the %2." )
+				.arg( record.number ).arg( trackLengthLabel( g_trackLength ) );
+			return false;
+		}
 	}
-	UndoableCommand undo( "RallyRoute.importBpd" );
-	for ( const ImportedPoint& point : imported ) {
-		Entity* entity = entities[point.number];
-		const QByteArray anchor = QString( "%1 %2 %3" ).arg( point.anchor.x, 0, 'f', 3 )
-			.arg( point.anchor.y, 0, 'f', 3 ).arg( point.anchor.z, 0, 'f', 3 ).toLocal8Bit();
-		const QByteArray handle = QString( "%1 %2 %3" ).arg( point.handle.x, 0, 'f', 3 )
-			.arg( point.handle.y, 0, 'f', 3 ).arg( point.handle.z, 0, 'f', 3 ).toLocal8Bit();
+	if ( records.size() != checkpoints.size() ) {
+		error = QString( "The BPD file has %1 checkpoints, the %2 has %3. No values were imported." )
+			.arg( records.size() ).arg( trackLengthLabel( g_trackLength ) ).arg( checkpoints.size() );
+		return false;
+	}
+	UndoableCommand undo( undoName );
+	for ( const BpdRecord& record : records ) {
+		Entity* entity = entities[record.number];
+		const QByteArray anchor = QString( "%1 %2 %3" ).arg( record.anchor.x, 0, 'f', 3 )
+			.arg( record.anchor.y, 0, 'f', 3 ).arg( record.anchor.z, 0, 'f', 3 ).toLocal8Bit();
+		const QByteArray handle = QString( "%1 %2 %3" ).arg( record.handle.x, 0, 'f', 3 )
+			.arg( record.handle.y, 0, 'f', 3 ).arg( record.handle.z, 0, 'f', 3 ).toLocal8Bit();
 		entity->setKeyValue( "bezierPos", anchor.constData() );
 		entity->setKeyValue( "bezierDir", handle.constData() );
 	}
 	SceneChangeNotify();
+	return true;
+}
+
+enum class BpdSync { NoFile, InSync, Differs, Unreadable };
+
+static BpdSync bpdSyncState( const QString& path, const std::vector<Checkpoint>& checkpoints ) {
+	if ( path.isEmpty() || !QFileInfo::exists( path ) ) return BpdSync::NoFile;
+	std::vector<BpdRecord> records;
+	QString error;
+	if ( !readBpdFile( path, records, error ) ) return BpdSync::Unreadable;
+	return recordsMatchCheckpoints( checkpoints, records ) ? BpdSync::InSync : BpdSync::Differs;
+}
+
+static bool loadBpdIntoCheckpoints( const QString& path, const char* undoName, QString& error ) {
+	std::vector<BpdRecord> records;
+	return readBpdFile( path, records, error ) && applyBpdRecords( collectCheckpoints(), records, undoName, error );
+}
+
+static void showRouteStatus() {
+	const MapTrackInfo info = collectMapTrackInfo();
+	const std::vector<Checkpoint> checkpoints = collectCheckpoints();
+	int anchors = 0, handles = 0;
+	for ( const Checkpoint& checkpoint : checkpoints ) {
+		if ( checkpoint.hasAnchor ) ++anchors;
+		if ( checkpoint.hasHandle ) ++handles;
+	}
+	QStringList allowed;
+	for ( int i = 0; i < k_trackLengthCount; ++i ) {
+		if ( info.allowed[i] ) allowed << k_trackLengthNames[i];
+	}
+	QString numbering = "1..N, ok";
+	QString problem;
+	if ( checkpoints.empty() ) numbering = "none";
+	else if ( !checkCheckpointNumbers( checkpoints, problem ) ) numbering = "PROBLEM: " + problem;
+
+	const QString path = trackLengthBpdPath( info, g_trackLength );
+	QString fileState;
+	switch ( bpdSyncState( path, checkpoints ) ) {
+	case BpdSync::NoFile: fileState = "missing"; break;
+	case BpdSync::InSync: fileState = "matches the map"; break;
+	case BpdSync::Differs: fileState = "differs from the map (export or import to sync)"; break;
+	case BpdSync::Unreadable: fileState = "unreadable"; break;
+	}
+	QString text = QString( "Track length: %1%2\nEnabled in worldspawn: %3\nCheckpoints differ between lengths: %4\n\n"
+		"Checkpoints: %5 (numbers %6)\nBezier anchors: %7/%5\nHandle vectors: %8/%5\n\n" )
+		.arg( k_trackLengthNames[g_trackLength] )
+		.arg( info.allowed[g_trackLength] ? "" : " (not enabled in worldspawn)" )
+		.arg( allowed.isEmpty() ? "none" : allowed.join( ", " ) )
+		.arg( info.hasVariants ? "yes, one BPD per length" : "no" )
+		.arg( checkpoints.size() ).arg( numbering ).arg( anchors ).arg( handles );
+	if ( path.isEmpty() ) {
+		text += "BPD file: save the map first; the BPD files belong next to the .map.\n";
+	} else {
+		text += QString( "BPD file: %1\n  %2\n" ).arg( QDir::toNativeSeparators( path ), fileState );
+		const QString homeCopy = QDir( gameMapsDirectory() ).filePath( QFileInfo( path ).fileName() );
+		if ( QFileInfo( homeCopy ).absoluteFilePath() != QFileInfo( path ).absoluteFilePath() && QFileInfo::exists( homeCopy ) )
+			text += QString( "  Note: %1 exists too and overrides the shipped file in the game.\n" ).arg( QDir::toNativeSeparators( homeCopy ) );
+	}
+	text += "\nThe route preview uses bezierPos/bezierDir exactly as Q3Rally does. Missing anchors are skipped; missing handles act as zero offsets. Respawn origin is never used as a route point.";
+	showMessage( text, EMessageBoxType::Info );
+}
+
+static void exportBpd() {
+	const MapTrackInfo info = collectMapTrackInfo();
+	const std::vector<Checkpoint> checkpoints = collectCheckpoints();
+	QString error;
+	if ( !checkExportable( checkpoints, error ) ) {
+		showMessage( error, EMessageBoxType::Warning );
+		return;
+	}
+	const QString suggested = trackLengthBpdPath( info, g_trackLength );
+	const QString path = QFileDialog::getSaveFileName( g_mainWindow,
+		QString( "Export Q3Rally Bezier path — %1" ).arg( trackLengthLabel( g_trackLength ) ),
+		suggested.isEmpty() ? bpdDirectory() : suggested, "Bezier paths (*.bpd);;All files (*)" );
+	if ( path.isEmpty() ) return;
+	if ( !writeBpdFile( path, checkpoints, error ) ) showMessage( error, EMessageBoxType::Error );
+}
+
+static void importBpd() {
+	const MapTrackInfo info = collectMapTrackInfo();
+	const QString suggested = trackLengthBpdPath( info, g_trackLength );
+	const QString start = !suggested.isEmpty() && QFileInfo::exists( suggested ) ? suggested
+		: ( bpdFolder().isEmpty() ? bpdDirectory() : bpdFolder() );
+	const QString path = QFileDialog::getOpenFileName( g_mainWindow,
+		QString( "Import Q3Rally Bezier path — %1" ).arg( trackLengthLabel( g_trackLength ) ),
+		start, "Bezier paths (*.bpd);;All files (*)" );
+	if ( path.isEmpty() ) return;
+	QString error;
+	if ( !loadBpdIntoCheckpoints( path, "RallyRoute.importBpd", error ) ) showMessage( error, EMessageBoxType::Error );
+}
+
+static void refreshEditor();
+
+/* Switch the track length the plugin works on. Unsaved Bezier keys of the current length
+   can be written to its BPD first; the new length then loads its reference BPD. */
+static bool switchTrackLength( int trackLength ) {
+	if ( trackLength < 0 || trackLength >= k_trackLengthCount ) return false;
+	if ( trackLength == g_trackLength ) {
+		refreshEditor();
+		return true;
+	}
+	const MapTrackInfo info = collectMapTrackInfo();
+	const QString currentPath = trackLengthBpdPath( info, g_trackLength );
+	if ( currentPath == trackLengthBpdPath( info, trackLength ) ) {
+		/* One shared <map>.bpd: both lengths use the same file and checkpoints. */
+		g_trackLength = trackLength;
+		SceneChangeNotify();
+		refreshEditor();
+		return true;
+	}
+	const std::vector<Checkpoint> current = collectCheckpoints();
+	const BpdSync currentState = bpdSyncState( currentPath, current );
+	const bool hasKeys = std::any_of( current.begin(), current.end(), []( const Checkpoint& checkpoint ) { return checkpoint.hasAnchor; } );
+	if ( !currentPath.isEmpty() && ( currentState == BpdSync::Differs || ( currentState == BpdSync::NoFile && hasKeys ) ) ) {
+		const QString question = QString( "The Bezier route of the %1 is not saved in\n%2\n\nSave it before switching to the %3?" )
+			.arg( trackLengthLabel( g_trackLength ), QDir::toNativeSeparators( currentPath ), trackLengthLabel( trackLength ) );
+		const EMessageBoxReturn answer = GlobalRadiant().m_pfnMessageBox( g_mainWindow, question.toLocal8Bit().constData(),
+			"RallyRoute", EMessageBoxType::Question, eIDYES | eIDNO | eIDCANCEL );
+		if ( answer == eIDCANCEL ) return false;
+		if ( answer == eIDYES ) {
+			QString error;
+			if ( !checkExportable( current, error ) || !writeBpdFile( currentPath, current, error ) ) {
+				showMessage( error, EMessageBoxType::Error );
+				return false;
+			}
+		}
+	}
+
+	g_trackLength = trackLength;
+	const QString nextPath = trackLengthBpdPath( info, g_trackLength );
+	if ( bpdSyncState( nextPath, collectCheckpoints() ) == BpdSync::Differs ) {
+		QString error;
+		if ( !loadBpdIntoCheckpoints( nextPath, "RallyRoute.loadTrackLengthBpd", error ) )
+			showMessage( QString( "Could not load %1 for the %2:\n%3" )
+				.arg( QDir::toNativeSeparators( nextPath ), trackLengthLabel( g_trackLength ), error ), EMessageBoxType::Warning );
+	}
+	SceneChangeNotify();
+	refreshEditor();
+	return true;
 }
 
 struct GhostRouteSample {
@@ -823,6 +1166,7 @@ struct GhostRouteSample {
 struct GhostRouteFile {
 	QFileInfo fileInfo;
 	QString mapName;
+	int trackLength = -1;
 	int trackReversed = 0;
 	int gameType = -1;
 	int clean = 0;
@@ -845,6 +1189,10 @@ static bool parseGhostRoute( const QFileInfo& fileInfo, GhostRouteFile& ghost ) 
 		const char* text = line.constData();
 		if ( line.startsWith( "map " ) ) {
 			ghost.mapName = QString::fromLocal8Bit( text + 4 ).trimmed();
+			continue;
+		}
+		if ( line.startsWith( "track_length " ) ) {
+			ghost.trackLength = line.mid( 13 ).trimmed().toInt();
 			continue;
 		}
 		if ( line.startsWith( "track_reversed " ) ) {
@@ -877,7 +1225,8 @@ static bool parseGhostRoute( const QFileInfo& fileInfo, GhostRouteFile& ghost ) 
 	return ghost.mapName.length() > 0 && ghost.samples.size() > 1;
 }
 
-static bool findGhostForMap( const QString& mapName, GhostRouteFile& bestGhost ) {
+/* Best forward Ghost of the map; trackLength >= 0 also requires that length. */
+static bool findGhostForMap( const QString& mapName, int trackLength, GhostRouteFile& bestGhost ) {
 	const QString ghostPath = QDir( QDir::homePath() ).filePath( "AppData/Roaming/Q3Rally/baseq3r/ghosts" );
 	QDir directory( ghostPath );
 	if ( !directory.exists() ) return false;
@@ -890,6 +1239,7 @@ static bool findGhostForMap( const QString& mapName, GhostRouteFile& bestGhost )
 			candidate.gameType == 2 || candidate.gameType == 7 || candidate.gameType == 8 ||
 			candidate.gameType == 17 || candidate.gameType == 18;
 		if ( candidate.trackReversed != 0 || !supportedRaceMode ) continue;
+		if ( trackLength >= 0 && candidate.trackLength != trackLength ) continue;
 		if ( !found || candidate.clean > bestGhost.clean ||
 			( candidate.clean == bestGhost.clean && candidate.fileInfo.lastModified() > bestGhost.fileInfo.lastModified() ) ) {
 			bestGhost = std::move( candidate );
@@ -1007,10 +1357,6 @@ static bool buildBpdPoints( const std::vector<Checkpoint>& checkpoints, const Gh
 	return true;
 }
 
-static QString gameMapsDirectory() {
-	return QDir( QDir::homePath() ).filePath( "AppData/Roaming/Q3Rally/baseq3r/maps" );
-}
-
 static bool writeGeneratedBpd( const QString& path, const std::vector<GeneratedBpdPoint>& points, QString& error ) {
 	if ( QFileInfo::exists( path ) ) {
 		error = "A BPD file already exists at the destination and was left unchanged.";
@@ -1018,7 +1364,7 @@ static bool writeGeneratedBpd( const QString& path, const std::vector<GeneratedB
 	}
 	QFile file( path );
 	if ( !file.open( QIODevice::WriteOnly | QIODevice::NewOnly | QIODevice::Text ) ) {
-		error = "Could not create the BPD file in the Q3Rally maps folder.";
+		error = "Could not create the BPD file next to the map.";
 		return false;
 	}
 	QTextStream stream( &file );
@@ -1049,9 +1395,37 @@ static QString g_attemptedMapName;
 static int g_mapStableTicks = 0;
 static QTimer* g_mapWatcher = nullptr;
 
-static void checkMapForGhostBpd() {
-	const char* mapNameText = GlobalRadiant().getMapName ? GlobalRadiant().getMapName() : nullptr;
-	const QString mapName = mapNameText ? QString::fromLocal8Bit( mapNameText ) : QString();
+/* Writes a BPD seed from a recorded Ghost for every enabled track length that has no BPD yet.
+   Existing files are never touched. Returns the paths written. */
+static QStringList seedBpdsFromGhosts( const MapTrackInfo& info, QStringList& problems ) {
+	QStringList created;
+	const QString baseName = currentMapBaseName();
+	for ( int trackLength = 0; trackLength < k_trackLengthCount; ++trackLength ) {
+		if ( !info.allowed[trackLength] ) continue;
+		const QString outputPath = trackLengthBpdPath( info, trackLength );
+		if ( outputPath.isEmpty() || QFileInfo::exists( outputPath ) ) continue;
+		const std::vector<Checkpoint> checkpoints = collectCheckpointsForLength( trackLength );
+		if ( checkpoints.size() < 2 ) continue;
+		/* A shared <map>.bpd may come from any length; per-length files need the matching Ghost. */
+		const bool perLengthFile = !outputPath.endsWith( baseName + ".bpd", Qt::CaseInsensitive );
+		GhostRouteFile ghost;
+		if ( !findGhostForMap( baseName, perLengthFile ? trackLength : -1, ghost ) ) continue;
+		std::vector<GeneratedBpdPoint> points;
+		QString error;
+		if ( !buildBpdPoints( checkpoints, ghost, points, error ) || !writeGeneratedBpd( outputPath, points, error ) ) {
+			problems << QString( "%1: %2" ).arg( trackLengthLabel( trackLength ), error );
+			continue;
+		}
+		created << QString( "%1 (%2, from %3)" ).arg( QDir::toNativeSeparators( outputPath ),
+			trackLengthLabel( trackLength ), ghost.fileInfo.fileName() );
+	}
+	return created;
+}
+
+/* Runs once per opened map: picks the track length, offers to load the reference BPD when the
+   map's Bezier keys differ from it, and seeds missing BPDs from Ghost recordings. */
+static void checkMapReady() {
+	const QString mapName = currentMapPath();
 	if ( mapName.isEmpty() ) return;
 	if ( mapName != g_watchedMapName ) {
 		g_watchedMapName = mapName;
@@ -1060,39 +1434,47 @@ static void checkMapForGhostBpd() {
 	}
 	if ( ++g_mapStableTicks < 3 || g_attemptedMapName == mapName ) return;
 
-	const std::vector<Checkpoint> checkpoints = collectCheckpoints();
-	if ( checkpoints.size() < 2 ) {
+	if ( collectCheckpointsForLength( -1 ).size() < 2 ) {
 		if ( g_mapStableTicks >= 10 ) g_attemptedMapName = mapName;
 		return;
 	}
 	g_attemptedMapName = mapName;
-	const QString mapBaseName = QFileInfo( mapName ).completeBaseName();
-	if ( mapBaseName.isEmpty() || mapBaseName.compare( "unnamed", Qt::CaseInsensitive ) == 0 ) return;
-	const QString mapsDirectory = gameMapsDirectory();
-	const QString outputPath = QDir( mapsDirectory ).filePath( mapBaseName + ".bpd" );
-	if ( QFileInfo::exists( outputPath ) ) return;
+	const MapTrackInfo info = collectMapTrackInfo();
+	g_trackLength = firstAllowedTrackLength( info );
+	refreshEditor();
+	if ( currentMapBaseName().isEmpty() ) return;
 
-	GhostRouteFile ghost;
-	if ( !findGhostForMap( mapBaseName, ghost ) ) return;
-	std::vector<GeneratedBpdPoint> points;
-	QString error;
-	if ( !buildBpdPoints( checkpoints, ghost, points, error ) ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute — Ghost route seed", EMessageBoxType::Warning, 0 );
-		return;
-	}
-	if ( !QDir().mkpath( mapsDirectory ) ) {
-		error = "Could not create the Q3Rally maps folder.";
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute — Ghost route seed", EMessageBoxType::Warning, 0 );
-		return;
-	}
-	if ( !writeGeneratedBpd( outputPath, points, error ) ) {
-		GlobalRadiant().m_pfnMessageBox( g_mainWindow, error.toLocal8Bit().constData(), "RallyRoute — Ghost route seed", EMessageBoxType::Warning, 0 );
-		return;
+	const QString path = trackLengthBpdPath( info, g_trackLength );
+	if ( bpdSyncState( path, collectCheckpoints() ) == BpdSync::Differs ) {
+		const QString question = QString( "The Bezier keys of the %1 differ from its BPD file\n%2\n\n"
+			"The BPD file is the reference route. Load it into the checkpoints?" )
+			.arg( trackLengthLabel( g_trackLength ), QDir::toNativeSeparators( path ) );
+		if ( GlobalRadiant().m_pfnMessageBox( g_mainWindow, question.toLocal8Bit().constData(), "RallyRoute",
+			EMessageBoxType::Question, eIDYES | eIDNO ) == eIDYES ) {
+			QString error;
+			if ( !loadBpdIntoCheckpoints( path, "RallyRoute.loadReferenceBpd", error ) ) showMessage( error, EMessageBoxType::Error );
+			refreshEditor();
+		}
 	}
 
-	const QString message = QString( "Created a BPD seed from %1:\n%2\n\nThe route uses the Ghost's world positions and is ready to inspect and refine in RallyRoute." )
-		.arg( ghost.fileInfo.fileName(), outputPath );
-	GlobalRadiant().m_pfnMessageBox( g_mainWindow, message.toLocal8Bit().constData(), "RallyRoute — Ghost route seed", EMessageBoxType::Info, 0 );
+	QStringList problems;
+	const QStringList created = seedBpdsFromGhosts( info, problems );
+	if ( !problems.isEmpty() )
+		showMessage( "Could not create a BPD seed from a Ghost:\n" + problems.join( "\n" ), EMessageBoxType::Warning, "RallyRoute — Ghost route seed" );
+	if ( created.isEmpty() ) return;
+	QString message = QString( "Created BPD seeds from Ghost recordings:\n%1\n\nThe routes use the Ghosts' world positions and are ready to refine." )
+		.arg( created.join( "\n" ) );
+	if ( bpdSyncState( path, collectCheckpoints() ) == BpdSync::Differs ) {
+		message += QString( "\n\nLoad the seed for the %1 into the checkpoints now?" ).arg( trackLengthLabel( g_trackLength ) );
+		if ( GlobalRadiant().m_pfnMessageBox( g_mainWindow, message.toLocal8Bit().constData(), "RallyRoute — Ghost route seed",
+			EMessageBoxType::Question, eIDYES | eIDNO ) == eIDYES ) {
+			QString error;
+			if ( !loadBpdIntoCheckpoints( path, "RallyRoute.loadGhostSeed", error ) ) showMessage( error, EMessageBoxType::Error );
+			refreshEditor();
+		}
+		return;
+	}
+	showMessage( message, EMessageBoxType::Info, "RallyRoute — Ghost route seed" );
 }
 
 } // namespace
@@ -1109,14 +1491,18 @@ const char* init( void*, void* parent ) {
 	GlobalSelectionSystem().addSelectionChangeCallback( makeSignalHandler1( SelectionChangedCaller() ) );
 	g_mapWatcher = new QTimer( main_window );
 	g_mapWatcher->setInterval( 750 );
-	QObject::connect( g_mapWatcher, &QTimer::timeout, checkMapForGhostBpd );
+	QObject::connect( g_mapWatcher, &QTimer::timeout, checkMapReady );
 	g_mapWatcher->start();
 	return "Initializing RallyRoute Bezier editor";
 }
 
 const char* getName() { return "RallyRoute"; }
 const char* getCommandTitleList() { return ""; }
-const char* getCommandList() { return "Toggle Bezier Route;Edit Selected Checkpoint...;Import BPD...;Export BPD...;Route Status"; }
+const char* getCommandList() {
+	return "Toggle Bezier Route;Edit Selected Checkpoint...;-;"
+		"Track Length: Short;Track Length: Medium;Track Length: Long;-;"
+		"Import BPD...;Export BPD...;Route Status";
+}
 
 void dispatch( const char* command, float*, float*, bool ) {
 	if ( string_equal( command, "Toggle Bezier Route" ) ) {
@@ -1127,6 +1513,12 @@ void dispatch( const char* command, float*, float*, bool ) {
 		g_editor->updateFromSelection();
 		g_editor->show();
 		g_editor->raise();
+	} else if ( string_equal( command, "Track Length: Short" ) ) {
+		switchTrackLength( 0 );
+	} else if ( string_equal( command, "Track Length: Medium" ) ) {
+		switchTrackLength( 1 );
+	} else if ( string_equal( command, "Track Length: Long" ) ) {
+		switchTrackLength( 2 );
 	} else if ( string_equal( command, "Export BPD..." ) ) {
 		exportBpd();
 	} else if ( string_equal( command, "Import BPD..." ) ) {
